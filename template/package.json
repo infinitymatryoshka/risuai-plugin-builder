@@ -1,0 +1,19 @@
+{
+  "name": "risuai-example-plugin",
+  "version": "1.0.0",
+  "description": "Example RisuAI plugin built with TypeScript",
+  "scripts": {
+    "build": "node ../dist/builder.js",
+    "dev": "node ../dist/builder.js && echo 'Plugin built successfully!'"
+  },
+  "keywords": [
+    "risuai",
+    "plugin"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}

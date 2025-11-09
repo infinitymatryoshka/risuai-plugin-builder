@@ -1,0 +1,19 @@
+{
+  "name": "settings-backup-v3",
+  "version": "3.0.0",
+  "description": "RisuAI Settings Backup with ZIP, module assets, persona icons, and SW cache fallback",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "node ../dist/builder.js"
+  },
+  "keywords": [
+    "risuai",
+    "plugin",
+    "backup"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "jszip": "^3.10.1"
+  }
+}

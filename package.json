@@ -1,0 +1,28 @@
+{
+  "name": "@risuai/plugin-builder",
+  "version": "1.0.0",
+  "description": "Development tool for building RisuAI plugins with TypeScript",
+  "main": "dist/builder.js",
+  "bin": {
+    "risu-plugin-build": "./dist/builder.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node dist/builder.js --help"
+  },
+  "keywords": [
+    "risuai",
+    "plugin",
+    "typescript",
+    "builder"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "esbuild": "^0.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
