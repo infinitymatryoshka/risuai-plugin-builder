@@ -195,6 +195,60 @@ export async function exportSettings() {
             }
         }
 
+        // Export custom background
+        if (db.customBackground && db.customBackground.startsWith('assets/')) {
+            console.log(`Processing custom background: ${db.customBackground}`);
+            updateLoadingProgress(1, 1, "Processing custom background");
+
+            const customBgFolder = zip.folder("custom-background");
+            if (customBgFolder) {
+                const storage = createStorage();
+
+                try {
+                    const bgData = await storage.getItem(db.customBackground);
+
+                    if (!bgData) {
+                        console.warn(`❌ Custom background not found: ${db.customBackground}`);
+                    } else {
+                        // Convert to base64
+                        let base64Data: string;
+                        if (bgData instanceof Uint8Array || bgData instanceof ArrayBuffer) {
+                            const uint8Array = bgData instanceof ArrayBuffer ? new Uint8Array(bgData) : bgData;
+                            const binaryString = Array.from(uint8Array)
+                                .map((byte) => String.fromCharCode(byte))
+                                .join("");
+                            base64Data = btoa(binaryString);
+                        } else if (typeof bgData === 'string') {
+                            if (bgData.startsWith('data:')) {
+                                const parts = bgData.split(',');
+                                if (parts.length < 2) {
+                                    console.warn(`Invalid data URL for custom background`);
+                                } else {
+                                    base64Data = parts[1];
+                                }
+                            } else {
+                                base64Data = bgData;
+                            }
+                        } else {
+                            console.warn(`Unknown data format for custom background`);
+                        }
+
+                        if (base64Data!) {
+                            // Extract extension from path
+                            const pathParts = db.customBackground.split('.');
+                            const ext = pathParts.length > 1 ? pathParts[pathParts.length - 1] : 'png';
+                            const filename = `background.${ext}`;
+
+                            customBgFolder.file(filename, base64Data, { base64: true });
+                            console.log(`✓ Custom background backed up: ${filename}`);
+                        }
+                    }
+                } catch (error) {
+                    console.warn(`Error processing custom background:`, error);
+                }
+            }
+        }
+
         // Generate ZIP file
         updateLoadingProgress(1, 1, "Generating ZIP file");
         const zipBlob = await zip.generateAsync({ type: "blob" });

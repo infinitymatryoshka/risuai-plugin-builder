@@ -218,6 +218,57 @@ export async function importSettings() {
                 }
             }
 
+            // Restore custom background
+            const customBgFolder = zip.folder('custom-background');
+            if (customBgFolder) {
+                const bgFiles = Object.keys(zip.files).filter(
+                    (name) => name.startsWith('custom-background/') && !zip.files[name].dir
+                );
+
+                if (bgFiles.length > 0) {
+                    console.log(`Found custom background in ZIP`);
+                    updateLoadingProgress(1, 1, 'Restoring custom background');
+
+                    try {
+                        const bgPath = bgFiles[0]; // Should only be one background file
+                        const file = zip.file(bgPath);
+
+                        if (file) {
+                            const filename = bgPath.split('/')[1];
+                            const ext = filename.split('.').pop() || 'png';
+
+                            const bgUint8Array = await file.async('uint8array');
+
+                            // Store using saveAsset (supports all platforms)
+                            let storageKey: string;
+                            try {
+                                // @ts-ignore - saveAsset is a global function provided by RisuAI
+                                storageKey = await saveAsset(bgUint8Array, `custom-background`, `custom-background.${ext}`);
+                                console.log(`✓ Restored custom background (saveAsset): ${storageKey}`);
+                            } catch (error) {
+                                console.error(`saveAsset failed for custom background:`, error);
+
+                                if (isTauriEnvironment()) {
+                                    throw new Error(`Tauri import failed: saveAsset() not available or failed. Cannot use IndexedDB fallback in Tauri.`);
+                                }
+
+                                // Fallback to manual storage (Web only)
+                                console.warn(`Trying manual storage fallback...`);
+                                storageKey = `assets/custom-background.${ext}`;
+                                await storage.setItem(storageKey, bgUint8Array);
+                                console.log(`✓ Restored custom background (manual): ${storageKey}`);
+                            }
+
+                            // Update customBackground reference in settings
+                            importedSettings.customBackground = storageKey;
+                            console.log(`Updated customBackground reference: ${storageKey}`);
+                        }
+                    } catch (error) {
+                        console.warn(`Error restoring custom background:`, error);
+                    }
+                }
+            }
+
             // Clean up export metadata
             delete importedSettings.exportDate;
             delete importedSettings.exportVersion;
@@ -245,8 +296,12 @@ export async function importSettings() {
             // Save to database
             updateLoadingProgress(1, 1, 'Saving to database');
 
-            // @ts-ignore - setDatabaseLite is a global function provided by RisuAI
-            setDatabaseLite(importedSettings);
+            // @ts-ignore - setDatabase is a global function provided by RisuAI
+            // Using setDatabase() instead of setDatabaseLite() for proper initialization:
+            // - Sets default values for 83+ fields (handles new features in updates)
+            // - Applies language settings
+            // - Validates data integrity
+            setDatabase(importedSettings);
 
             removeLoadingOverlay();
             console.log('ResuAI: Import successful!');

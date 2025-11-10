@@ -1,3 +1,5 @@
+/// <reference types="../../types/risu-plugin" />
+
 /**
  * AI Provider implementation
  * This file shows how to add a custom AI provider to RisuAI

@@ -1,3 +1,5 @@
+/// <reference types="../../types/risu-plugin" />
+
 /**
  * Example RisuAI Plugin
  *

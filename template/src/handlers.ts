@@ -1,3 +1,5 @@
+/// <reference types="../../types/risu-plugin" />
+
 /**
  * Text processing handlers
  * This file shows how to modify text at different stages
