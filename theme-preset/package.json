@@ -1,0 +1,17 @@
+{
+  "name": "theme-preset-plugin",
+  "version": "1.0.0",
+  "description": "Theme Preset Manager for RisuAI",
+  "main": "dist/themepreset.js",
+  "scripts": {
+    "build": "node ../dist/builder.js",
+    "dev": "npm run build -- --watch"
+  },
+  "keywords": [
+    "risuai",
+    "plugin",
+    "theme"
+  ],
+  "author": "",
+  "license": "MIT"
+}
