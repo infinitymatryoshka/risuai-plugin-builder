@@ -5,7 +5,12 @@
 import JSZip from 'jszip';
 import { createStorage } from './storage';
 import { createLoadingOverlay, updateLoadingProgress, removeLoadingOverlay } from './ui';
-export async function exportSettings() {
+export interface ExportOptions {
+    excludeAccount?: boolean;
+}
+
+export async function exportSettings(options: ExportOptions = {}) {
+    const { excludeAccount = true } = options; // 기본값: 계정 정보 제외
     console.log('ResuAI: Starting export...');
     const overlay = createLoadingOverlay('💾 Exporting Settings');
 
@@ -47,6 +52,12 @@ export async function exportSettings() {
         delete settingsBackup.characters;
         delete settingsBackup.characterOrder;
 
+        // Exclude account info if option is enabled (default: true)
+        if (excludeAccount) {
+            delete settingsBackup.account;
+            console.log('ResuAI: Account info excluded from backup');
+        }
+
         // Remove assets from modules in settings backup
         if (settingsBackup.modules && Array.isArray(settingsBackup.modules)) {
             settingsBackup.modules = settingsBackup.modules.map((module: any) => {
@@ -57,8 +68,9 @@ export async function exportSettings() {
 
         // Add export metadata
         (settingsBackup as any).exportDate = new Date().toISOString();
-        (settingsBackup as any).exportVersion = '3.0.0';
+        (settingsBackup as any).exportVersion = '3.1.0';
         (settingsBackup as any).pluginName = 'settingsbackup-v3';
+        (settingsBackup as any).accountExcluded = excludeAccount;
 
         // Create ZIP
         const zip = new JSZip();

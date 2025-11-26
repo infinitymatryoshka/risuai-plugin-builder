@@ -19,7 +19,7 @@ console.log('ResuAI: Initializing...');
 
 // Create UI with Export/Import buttons
 const ui = createUI({
-    onExport: exportSettings,
+    onExport: (options) => exportSettings(options),
     onImport: importSettings
 });
 

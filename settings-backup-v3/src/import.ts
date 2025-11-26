@@ -6,6 +6,197 @@ import JSZip from 'jszip';
 import { createStorage, isTauriEnvironment } from './storage';
 import { createLoadingOverlay, updateLoadingProgress, removeLoadingOverlay } from './ui';
 
+interface ImportDialogResult {
+    confirmed: boolean;
+    preserveAccount: boolean;
+}
+
+/**
+ * Custom import confirmation dialog with account preservation option
+ */
+function showImportDialog(
+    exportDate: string,
+    exportVersion: string,
+    accountExcluded: boolean,
+    hasCurrentAccount: boolean
+): Promise<ImportDialogResult> {
+    return new Promise((resolve) => {
+        // Create overlay
+        const overlay = document.createElement('div');
+        overlay.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10001;
+        `;
+
+        // Create dialog
+        const dialog = document.createElement('div');
+        dialog.style.cssText = `
+            background: #2a2a3e;
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            max-width: 400px;
+            width: 90%;
+            color: #e0e0e0;
+        `;
+
+        // Title
+        const title = document.createElement('h3');
+        title.textContent = '📥 Import Settings?';
+        title.style.cssText = `
+            margin: 0 0 16px 0;
+            font-size: 20px;
+            color: #fff;
+        `;
+
+        // Info section
+        const info = document.createElement('div');
+        info.style.cssText = `
+            background: rgba(255, 255, 255, 0.05);
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 14px;
+        `;
+        info.innerHTML = `
+            <div style="margin-bottom: 8px;"><strong>Export Date:</strong> ${exportDate || 'Unknown'}</div>
+            <div><strong>Version:</strong> ${exportVersion || 'Unknown'}</div>
+            ${accountExcluded ? '<div style="margin-top: 8px; color: #a0a0a0;">ℹ️ 백업에 계정 정보 없음</div>' : ''}
+        `;
+
+        // Checkbox for preserving account
+        let preserveAccountCheckbox: HTMLInputElement | null = null;
+        const checkboxContainer = document.createElement('label');
+        checkboxContainer.style.cssText = `
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            padding: 12px;
+            background: rgba(139, 92, 246, 0.1);
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 14px;
+        `;
+
+        preserveAccountCheckbox = document.createElement('input');
+        preserveAccountCheckbox.type = 'checkbox';
+        preserveAccountCheckbox.checked = true; // 기본값: 기존 계정 유지
+        preserveAccountCheckbox.style.cssText = `
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: #8B5CF6;
+        `;
+
+        const checkboxLabel = document.createElement('span');
+
+        // Handle different scenarios
+        if (!hasCurrentAccount) {
+            // No current account - checkbox is irrelevant
+            preserveAccountCheckbox.checked = false;
+            preserveAccountCheckbox.disabled = true;
+            preserveAccountCheckbox.style.cursor = 'not-allowed';
+            preserveAccountCheckbox.style.opacity = '0.4';
+            checkboxContainer.style.cursor = 'default';
+            checkboxContainer.style.opacity = '0.6';
+            checkboxLabel.innerHTML = `🔓 기존 계정 정보 유지<br><small style="color: #a0a0a0;">현재 로그인된 계정 없음</small>`;
+        } else if (accountExcluded) {
+            // Has current account but backup has no account
+            // Prevent unchecking (would cause forced logout)
+            checkboxLabel.innerHTML = `🔒 기존 계정 정보 유지 <span style="color: #8B5CF6;">(필수)</span><br><small style="color: #ffa726;">백업에 계정 정보 없음 - 해제하면 로그아웃됩니다</small>`;
+
+            // Block unchecking with warning
+            preserveAccountCheckbox.onchange = () => {
+                if (!preserveAccountCheckbox!.checked) {
+                    alert('⚠️ 백업에 계정 정보가 없습니다.\n\n체크를 해제하면 강제 로그아웃됩니다.\n로그아웃이 필요하면 직접 로그아웃 후 복원하세요.');
+                    preserveAccountCheckbox!.checked = true;
+                }
+            };
+        } else {
+            // Has current account and backup has account - allow choice
+            checkboxLabel.innerHTML = `🔒 기존 계정 정보 유지<br><small style="color: #a0a0a0;">Keep current account info</small>`;
+        }
+
+        checkboxContainer.appendChild(preserveAccountCheckbox);
+        checkboxContainer.appendChild(checkboxLabel);
+
+        // Warning
+        const warning = document.createElement('div');
+        warning.style.cssText = `
+            color: #ffa726;
+            font-size: 13px;
+            margin-bottom: 20px;
+        `;
+        warning.textContent = '⚠️ 설정이 덮어씌워집니다 (캐릭터 제외)';
+
+        // Buttons
+        const buttonContainer = document.createElement('div');
+        buttonContainer.style.cssText = `
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+        `;
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.style.cssText = `
+            padding: 10px 20px;
+            background: #555;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+        `;
+        cancelBtn.onclick = () => {
+            document.body.removeChild(overlay);
+            resolve({ confirmed: false, preserveAccount: false });
+        };
+
+        const importBtn = document.createElement('button');
+        importBtn.textContent = 'Import';
+        importBtn.style.cssText = `
+            padding: 10px 20px;
+            background: linear-gradient(135deg, #8B5CF6 0%, #3B82F6 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+        `;
+        importBtn.onclick = () => {
+            document.body.removeChild(overlay);
+            resolve({
+                confirmed: true,
+                preserveAccount: preserveAccountCheckbox?.checked ?? true
+            });
+        };
+
+        buttonContainer.appendChild(cancelBtn);
+        buttonContainer.appendChild(importBtn);
+
+        // Assemble dialog
+        dialog.appendChild(title);
+        dialog.appendChild(info);
+        dialog.appendChild(checkboxContainer);
+        dialog.appendChild(warning);
+        dialog.appendChild(buttonContainer);
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+    });
+}
+
 export async function importSettings() {
     console.log('ResuAI: Starting import...');
 
@@ -43,20 +234,28 @@ export async function importSettings() {
             const settingsText = await settingsFile.async('text');
             const importedSettings = JSON.parse(settingsText);
 
-            // Confirm with user
-            const confirmed = confirm(
-                `Import settings from backup?\n\n` +
-                `Export Date: ${importedSettings.exportDate || 'Unknown'}\n` +
-                `Version: ${importedSettings.exportVersion || 'Unknown'}\n\n` +
-                `⚠️ This will overwrite your current settings (except characters).`
+            // Remove loading overlay temporarily for dialog
+            removeLoadingOverlay();
+
+            // @ts-ignore - getDatabase is a global function provided by RisuAI
+            const currentDb = getDatabase();
+            const hasCurrentAccount = !!currentDb.account;
+
+            // Show custom confirmation dialog with account preservation option
+            const dialogResult = await showImportDialog(
+                importedSettings.exportDate || 'Unknown',
+                importedSettings.exportVersion || 'Unknown',
+                importedSettings.accountExcluded || false,
+                hasCurrentAccount
             );
 
-            if (!confirmed) {
-                removeLoadingOverlay();
+            if (!dialogResult.confirmed) {
                 console.log('Import cancelled by user');
                 return;
             }
 
+            // Re-show loading overlay
+            const overlay2 = createLoadingOverlay('📥 Importing Settings');
             updateLoadingProgress(3, 5, 'Reading current database');
 
             // @ts-ignore - getDatabase is a global function provided by RisuAI
@@ -65,6 +264,10 @@ export async function importSettings() {
             // Preserve characters
             const currentCharacters = db.characters;
             const currentCharacterOrder = db.characterOrder;
+
+            // Preserve account if user chose to
+            const currentAccount = db.account;
+            const preserveAccount = dialogResult.preserveAccount;
 
             updateLoadingProgress(4, 5, 'Restoring module assets');
 
@@ -292,6 +495,17 @@ export async function importSettings() {
             // Restore characters and characterOrder
             importedSettings.characters = currentCharacters;
             importedSettings.characterOrder = currentCharacterOrder;
+
+            // Restore account if user chose to preserve it
+            if (preserveAccount && currentAccount) {
+                importedSettings.account = currentAccount;
+                console.log('ResuAI: Preserved current account info');
+            } else if (!preserveAccount) {
+                console.log('ResuAI: Account info will be overwritten from backup');
+            }
+
+            // Clean up accountExcluded metadata
+            delete importedSettings.accountExcluded;
 
             // Save to database
             updateLoadingProgress(1, 1, 'Saving to database');

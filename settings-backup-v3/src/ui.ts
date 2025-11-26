@@ -73,7 +73,7 @@ export function removeLoadingOverlay() {
 }
 
 export interface UIOptions {
-    onExport: () => void;
+    onExport: (options: { excludeAccount: boolean }) => void;
     onImport: () => void;
 }
 
@@ -83,10 +83,14 @@ export interface UICleanup {
 }
 
 export function createUI(options: UIOptions): UICleanup {
+    // State for checkbox
+    let excludeAccount = true; // 기본값: 계정 정보 제외
+
     const container = document.createElement('div');
     container.id = 'settings-backup-v3-ui';
     container.style.cssText = `
         display: flex;
+        flex-direction: column;
         gap: 12px;
         margin-top: 12px;
         padding: 18px;
@@ -95,6 +99,14 @@ export function createUI(options: UIOptions): UICleanup {
         border-radius: 12px;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
         transition: all 0.3s ease;
+    `;
+
+    // Top row: label + buttons
+    const topRow = document.createElement('div');
+    topRow.style.cssText = `
+        display: flex;
+        gap: 12px;
+        align-items: center;
     `;
 
     const pluginLabel = document.createElement('div');
@@ -160,7 +172,7 @@ export function createUI(options: UIOptions): UICleanup {
         exportBtn.style.transform = 'translateY(0)';
         exportBtn.style.boxShadow = '0 2px 6px rgba(0, 0, 0, 0.15)';
     };
-    exportBtn.onclick = options.onExport;
+    exportBtn.onclick = () => options.onExport({ excludeAccount });
 
     const importBtn = document.createElement('button');
     importBtn.textContent = '⏮️ Restore Snapshot';
@@ -180,8 +192,42 @@ export function createUI(options: UIOptions): UICleanup {
     buttonContainer.appendChild(exportBtn);
     buttonContainer.appendChild(importBtn);
 
-    container.appendChild(pluginLabel);
-    container.appendChild(buttonContainer);
+    topRow.appendChild(pluginLabel);
+    topRow.appendChild(buttonContainer);
+
+    // Checkbox row: 계정 정보 제외 옵션
+    const checkboxRow = document.createElement('label');
+    checkboxRow.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        font-size: 13px;
+        color: #a0a0a0;
+        user-select: none;
+    `;
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = excludeAccount;
+    checkbox.style.cssText = `
+        width: 16px;
+        height: 16px;
+        cursor: pointer;
+        accent-color: #8B5CF6;
+    `;
+    checkbox.onchange = () => {
+        excludeAccount = checkbox.checked;
+    };
+
+    const checkboxLabel = document.createElement('span');
+    checkboxLabel.textContent = '🔒 계정 정보 제외하고 저장 (Exclude account info)';
+
+    checkboxRow.appendChild(checkbox);
+    checkboxRow.appendChild(checkboxLabel);
+
+    container.appendChild(topRow);
+    container.appendChild(checkboxRow);
 
     // Try to inject into settings page
     const intervalId = injectIntoSettingsPage(container);
