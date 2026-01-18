@@ -1,117 +1,169 @@
-# RisuAI Example Plugin
+# RisuAI Plugin Template (API v3.0)
 
-TypeScript로 작성된 RisuAI 플러그인 예시입니다.
+This is a template for creating RisuAI plugins using TypeScript and the new API v3.0.
 
-## 개발 시작
-
-### 1. 의존성 설치
-
-```bash
-npm install
-```
-
-### 2. 플러그인 설정 수정
-
-`plugin.config.ts` 파일을 열어 플러그인 정보를 수정하세요:
-
-```typescript
-const config: PluginConfig = {
-    name: 'your-plugin-name',           // 플러그인 ID
-    displayName: 'Your Plugin Name',    // UI에 표시될 이름
-    arguments: {
-        // 사용자가 설정할 수 있는 옵션들
-        api_key: {
-            type: 'string',
-            defaultValue: '',
-            description: 'API 키'
-        }
-    }
-};
-```
-
-### 3. 코드 작성
-
-- `src/index.ts` - 메인 진입점
-- `src/provider.ts` - AI 제공자 구현
-- `src/handlers.ts` - 텍스트 처리 핸들러
-
-필요에 따라 파일을 추가/삭제할 수 있습니다.
-
-### 4. 빌드
-
-```bash
-npm run build
-```
-
-빌드된 플러그인은 `dist/` 폴더에 생성됩니다.
-
-### 5. RisuAI에서 테스트
-
-1. RisuAI 실행
-2. 설정 → 플러그인
-3. `dist/your-plugin-name.js` 파일 가져오기
-
-## 프로젝트 구조
+## Project Structure
 
 ```
-.
-├── plugin.config.ts      # 플러그인 메타데이터 설정
+your-plugin/
+├── plugin.config.ts    # Plugin configuration (metadata, arguments, links)
 ├── src/
-│   ├── index.ts          # 메인 진입점
-│   ├── provider.ts       # AI 제공자 로직
-│   └── handlers.ts       # 텍스트 처리 핸들러
-├── tsconfig.json         # TypeScript 설정
-├── package.json          # 프로젝트 정보
-└── dist/                 # 빌드 결과 (자동 생성)
+│   ├── index.ts        # Main entry point
+│   ├── provider.ts     # AI provider implementation (optional)
+│   └── handlers.ts     # Text processing handlers (optional)
+├── dist/               # Built plugin output
+├── package.json
+└── tsconfig.json
 ```
 
-## 개발 팁
+## Getting Started
 
-### 타입 자동완성
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
 
-TypeScript를 사용하면 RisuAI API의 타입 자동완성을 받을 수 있습니다:
+2. Edit `plugin.config.ts` to configure your plugin:
+   - `name`: Unique plugin identifier
+   - `displayName`: Display name in UI
+   - `apiVersion`: Use '3.0'
+   - `version`: Your plugin version
+   - `arguments`: User-configurable settings
+   - `links`: Documentation links
+
+3. Implement your plugin in `src/index.ts`
+
+4. Build the plugin:
+   ```bash
+   npm run build
+   ```
+
+5. The built plugin will be in `dist/<plugin-name>.js`
+
+## API v3.0 Key Changes
+
+### All APIs are Async
+All `Risuai` API methods return Promises. Always use `await`:
 
 ```typescript
-// getArg 사용 시 타입 캐스팅
-const apiKey = getArg('myplugin::api_key') as string;
+// Correct
+const char = await Risuai.getCharacter();
+const apiKey = await Risuai.getArgument('api_key');
 
-// addProvider 사용 시 arg 타입 자동 완성
-addProvider('MyAI', async (arg, abortSignal) => {
-    arg.temperature  // 자동완성됨!
-    arg.max_tokens   // 자동완성됨!
-    // ...
+// Wrong - will not work
+const char = Risuai.getCharacter(); // Returns Promise, not data!
+```
+
+### Access via Risuai Object
+All APIs are accessed through the global `Risuai` object:
+
+```typescript
+await Risuai.getCharacter();
+await Risuai.getArgument('key');
+await Risuai.addProvider('name', func);
+await Risuai.registerSetting('name', callback, icon, iconType);
+```
+
+### Iframe-Based UI
+Your plugin runs in a sandboxed iframe. Use `showContainer()` to display UI:
+
+```typescript
+// Build your UI in the iframe's document
+document.body.innerHTML = '<h1>My Plugin</h1>';
+
+// Show the iframe
+await Risuai.showContainer('fullscreen');
+
+// Hide when done
+await Risuai.hideContainer();
+```
+
+### UI Registration
+Register settings and buttons in RisuAI's interface:
+
+```typescript
+// Settings menu item
+await Risuai.registerSetting('My Settings', async () => {
+    await Risuai.showContainer('fullscreen');
+}, 'icon', 'html');
+
+// Floating action button
+await Risuai.registerButton({
+    name: 'My Action',
+    icon: 'icon',
+    iconType: 'html',
+    location: 'action'
+}, async () => {
+    // Action code
 });
 ```
 
-### 디버깅
+## Available APIs
 
-`console.log()`를 사용하여 디버그 메시지를 출력할 수 있습니다:
+### Character & Database
+- `Risuai.getCharacter()` / `setCharacter()`
+- `Risuai.getDatabase()` / `setDatabase()` / `setDatabaseLite()`
+
+### Arguments & Storage
+- `Risuai.getArgument(key)` / `setArgument(key, value)`
+- `Risuai.pluginStorage` - Save-file specific, syncs across devices
+- `Risuai.safeLocalStorage` - Device-specific storage
+
+### AI Provider
+- `Risuai.addProvider(name, func, options)`
+
+### Text Processing
+- `Risuai.addRisuScriptHandler(mode, func)` - Modes: 'display', 'output', 'input', 'process'
+- `Risuai.addRisuReplacer(type, func)` - Types: 'beforeRequest', 'afterRequest'
+
+### Network
+- `Risuai.nativeFetch(url, options)` - Fetch with CORS handling
+
+### UI
+- `Risuai.showContainer(mode)` / `hideContainer()`
+- `Risuai.registerSetting(name, callback, icon, iconType)`
+- `Risuai.registerButton(options, callback)`
+
+### Lifecycle
+- `Risuai.onUnload(func)` - Cleanup on plugin unload
+
+## Example: Complete Plugin
 
 ```typescript
-console.log('Plugin loaded!', getArg('myplugin::api_key'));
+(async () => {
+    try {
+        console.log('My Plugin: Starting...');
+
+        // Get settings
+        const apiKey = await Risuai.getArgument('api_key') as string;
+
+        // Add AI provider
+        await Risuai.addProvider('MyAI', async (args, signal) => {
+            const response = await Risuai.nativeFetch('https://api.example.com/chat', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${apiKey}` },
+                body: JSON.stringify({ messages: args.prompt_chat }),
+                signal
+            });
+            const data = await response.json();
+            return { success: true, content: data.message };
+        });
+
+        // Register settings UI
+        await Risuai.registerSetting('My Plugin', async () => {
+            document.body.innerHTML = '<h1>Settings</h1>';
+            await Risuai.showContainer('fullscreen');
+        }, 'icon', 'html');
+
+        console.log('My Plugin: Ready!');
+    } catch (error) {
+        console.log(`Error: ${error}`);
+    }
+})();
 ```
 
-RisuAI의 개발자 도구(F12)에서 로그를 확인할 수 있습니다.
+## Resources
 
-### 여러 파일로 분리
-
-코드가 길어지면 여러 파일로 분리하세요:
-
-```typescript
-// src/utils.ts
-export function formatMessage(text: string): string {
-    return `[Plugin] ${text}`;
-}
-
-// src/index.ts
-import { formatMessage } from './utils';
-
-console.log(formatMessage('Hello!'));
-```
-
-빌드 시 자동으로 하나의 파일로 합쳐집니다.
-
-## 참고 자료
-
-- [RisuAI 플러그인 문서](https://github.com/kwaroran/RisuAI/blob/main/plugins.md)
-- [빌드 도구 README](../README.md)
+- [Official Plugin Documentation](https://github.com/kwaroran/RisuAI/blob/main/plugins.md)
+- [API v3.0 Migration Guide](https://github.com/kwaroran/RisuAI/blob/main/src/ts/plugins/migrationGuide.md)
+- [Type Definitions](https://github.com/kwaroran/RisuAI/blob/main/src/ts/plugins/apiV3/Risuai.d.ts)

@@ -1,39 +1,70 @@
 /**
  * Storage module for managing theme presets
+ * API v3.0 - Uses pluginStorage for all data persistence
+ * Arguments are only read for migration from old versions
  */
 
 import { PLUGIN_NAME } from './constants';
 import type { ThemePreset, CharacterThemeMap } from './types';
-import { applyColorScheme, applyTextTheme, getColorSchemeType, getColorSchemeByName } from './color-schemes';
+
+// Storage keys - data stored as JSON strings to avoid Svelte Proxy issues
+const STORAGE_KEYS = {
+    PRESETS: 'presets',
+    CHARACTER_THEME_MAP: 'characterThemeMap',
+    DEFAULT_THEME: 'defaultTheme'
+} as const;
 
 /**
- * Get all saved presets
+ * Deep clone for getDatabase results (still returns Svelte Proxy)
  */
-export function getPresets(): ThemePreset[] {
-    const presetsJson = getArg(`${PLUGIN_NAME}::presets`) as string;
-    if (!presetsJson || presetsJson === '') {
-        return [];
+function deepClone<T>(obj: T): T {
+    if (obj === null || obj === undefined) {
+        return obj;
     }
+    return JSON.parse(JSON.stringify(obj));
+}
+
+/**
+ * Get all saved presets from pluginStorage
+ * Stored as JSON string to avoid Svelte reactive Proxy issues
+ */
+export async function getPresets(): Promise<ThemePreset[]> {
     try {
-        return JSON.parse(presetsJson);
+        const data = await Risuai.pluginStorage.getItem(STORAGE_KEYS.PRESETS);
+        // If already string (new format), parse it
+        if (typeof data === 'string') {
+            const presets = JSON.parse(data);
+            return Array.isArray(presets) ? presets : [];
+        }
+        // If array (old format), return as-is but stringify for safety
+        if (Array.isArray(data)) {
+            return JSON.parse(JSON.stringify(data));
+        }
+        return [];
     } catch (e) {
-        console.error('Failed to parse theme presets:', e);
+        console.error('Failed to get presets:', e);
         return [];
     }
 }
 
 /**
- * Save presets array
+ * Save presets array to pluginStorage
+ * Stored as JSON string to avoid Svelte reactive Proxy issues
  */
-export function savePresets(presets: ThemePreset[]): void {
-    setArg(`${PLUGIN_NAME}::presets`, JSON.stringify(presets));
+export async function savePresets(presets: ThemePreset[]): Promise<void> {
+    try {
+        // Store as JSON string to avoid Proxy serialization issues
+        await Risuai.pluginStorage.setItem(STORAGE_KEYS.PRESETS, JSON.stringify(presets));
+    } catch (e) {
+        console.error('Failed to save presets:', e);
+    }
 }
 
 /**
  * Reorder presets by moving a preset from one index to another
  */
-export function reorderPresets(fromIndex: number, toIndex: number): boolean {
-    const presets = getPresets();
+export async function reorderPresets(fromIndex: number, toIndex: number): Promise<boolean> {
+    const presets = await getPresets();
 
     // Validate indices
     if (fromIndex < 0 || fromIndex >= presets.length || toIndex < 0 || toIndex >= presets.length) {
@@ -44,60 +75,38 @@ export function reorderPresets(fromIndex: number, toIndex: number): boolean {
     const [removed] = presets.splice(fromIndex, 1);
     presets.splice(toIndex, 0, removed);
 
-    savePresets(presets);
+    await savePresets(presets);
     return true;
 }
 
 /**
  * Save current theme as a preset
+ * Note: Custom colorScheme/textTheme objects are NOT saved - only names
+ * API v3.0 doesn't allow colorScheme in allowedDbKeys, so we can't restore them anyway
  */
-export function saveCurrentTheme(presetName: string): ThemePreset {
-    const db = getDatabase();
-    const presets = getPresets();
+export async function saveCurrentTheme(presetName: string): Promise<ThemePreset> {
+    // Deep clone to avoid Proxy issues
+    const db = deepClone(await Risuai.getDatabase());
+    const presets = await getPresets();
 
     const newPreset: ThemePreset = {
         name: presetName,
-        customCSS: db.customCSS || '',
-        guiHTML: db.guiHTML || '',
-        theme: db.theme || '',
-        colorSchemeName: db.colorSchemeName || '',
-        textTheme: db.textTheme || 'standard',
+        customCSS: db?.customCSS || '',
+        guiHTML: db?.guiHTML || '',
+        theme: db?.theme || '',
+        colorSchemeName: db?.colorSchemeName || '',
+        textTheme: db?.textTheme || 'standard',
         timestamp: Date.now()
     };
 
-    // Save custom color scheme if it's being used
-    if (db.colorSchemeName === 'custom' && db.colorScheme) {
-        newPreset.colorScheme = {
-            type: db.colorScheme.type || 'dark',
-            bgcolor: db.colorScheme.bgcolor || '',
-            darkbg: db.colorScheme.darkbg || '',
-            borderc: db.colorScheme.borderc || '',
-            selected: db.colorScheme.selected || '',
-            draculared: db.colorScheme.draculared || '',
-            darkBorderc: db.colorScheme.darkBorderc || '',
-            darkbutton: db.colorScheme.darkbutton || '',
-            textcolor: db.colorScheme.textcolor || '',
-            textcolor2: db.colorScheme.textcolor2 || ''
-        };
-    }
-
-    // Save custom text theme if it's being used
-    if (db.textTheme === 'custom' && db.customTextTheme) {
-        newPreset.customTextTheme = {
-            FontColorStandard: db.customTextTheme.FontColorStandard || '',
-            FontColorItalic: db.customTextTheme.FontColorItalic || '',
-            FontColorBold: db.customTextTheme.FontColorBold || '',
-            FontColorItalicBold: db.customTextTheme.FontColorItalicBold || '',
-            FontColorQuote1: db.customTextTheme.FontColorQuote1 || null,
-            FontColorQuote2: db.customTextTheme.FontColorQuote2 || null
-        };
-    }
+    // Note: We no longer save colorScheme/customTextTheme objects
+    // because API v3.0 can't restore them (colorScheme not in allowedDbKeys)
 
     // Remove existing preset with same name
     const filtered = presets.filter(p => p.name !== presetName);
     filtered.push(newPreset);
 
-    savePresets(filtered);
+    await savePresets(filtered);
     console.log(`Theme preset "${presetName}" saved successfully`);
 
     return newPreset;
@@ -105,9 +114,12 @@ export function saveCurrentTheme(presetName: string): ThemePreset {
 
 /**
  * Load and apply a theme preset
+ * Note: Uses setDatabase() without getDatabase() to avoid permission prompt
+ * setDatabase() merges only the provided keys, so we don't need full DB access
+ * Note: colorScheme/customTextTheme objects are NOT supported in API v3.0 (not in allowedDbKeys)
  */
-export function loadThemePreset(presetName: string): boolean {
-    const presets = getPresets();
+export async function loadThemePreset(presetName: string): Promise<boolean> {
+    const presets = await getPresets();
     const preset = presets.find(p => p.name === presetName);
 
     if (!preset) {
@@ -115,83 +127,54 @@ export function loadThemePreset(presetName: string): boolean {
         return false;
     }
 
-    const db = getDatabase();
+    // Build update object with only the keys we can set
+    // Note: colorScheme/customTextTheme are NOT in allowedDbKeys, so we only set names
+    const dbUpdate: Record<string, any> = {
+        customCSS: preset.customCSS || '',
+        guiHTML: preset.guiHTML || '',
+        theme: preset.theme || '',
+        colorSchemeName: preset.colorSchemeName || '',
+        textTheme: preset.textTheme || 'standard'
+    };
 
-    db.customCSS = preset.customCSS || '';
-    db.guiHTML = preset.guiHTML || '';
-    db.theme = preset.theme || '';
-    db.colorSchemeName = preset.colorSchemeName || '';
-    db.textTheme = preset.textTheme || 'standard';
+    await Risuai.setDatabase(dbUpdate);
 
-    // CRITICAL FIX: Update db.colorScheme object to match colorSchemeName
-    // This is what RisuAI's changeColorScheme() does
-    if (preset.colorSchemeName !== 'custom') {
-        // For preset color schemes (realblack, cherry, etc.),
-        // we must update db.colorScheme object from the scheme definition
-        const schemeObj = getColorSchemeByName(preset.colorSchemeName);
-        if (schemeObj) {
-            db.colorScheme = schemeObj;
-        }
-    }
-
-    // Restore custom color scheme if it was saved (for custom schemes only)
-    if (preset.colorScheme) {
-        db.colorScheme = {
-            type: preset.colorScheme.type || 'dark',
-            bgcolor: preset.colorScheme.bgcolor || '',
-            darkbg: preset.colorScheme.darkbg || '',
-            borderc: preset.colorScheme.borderc || '',
-            selected: preset.colorScheme.selected || '',
-            draculared: preset.colorScheme.draculared || '',
-            darkBorderc: preset.colorScheme.darkBorderc || '',
-            darkbutton: preset.colorScheme.darkbutton || '',
-            textcolor: preset.colorScheme.textcolor || '',
-            textcolor2: preset.colorScheme.textcolor2 || ''
-        };
-    }
-
-    // Restore custom text theme if it was saved
-    if (preset.customTextTheme) {
-        db.customTextTheme = {
-            FontColorStandard: preset.customTextTheme.FontColorStandard || '',
-            FontColorItalic: preset.customTextTheme.FontColorItalic || '',
-            FontColorBold: preset.customTextTheme.FontColorBold || '',
-            FontColorItalicBold: preset.customTextTheme.FontColorItalicBold || '',
-            FontColorQuote1: preset.customTextTheme.FontColorQuote1 || null,
-            FontColorQuote2: preset.customTextTheme.FontColorQuote2 || null
-        };
-    }
-
-    setDatabase(db);
-
-    // Apply color scheme immediately
-    applyColorScheme(preset.colorSchemeName, preset.colorScheme);
-
-    // Apply text theme immediately
-    const colorSchemeType = getColorSchemeType(preset.colorSchemeName, preset.colorScheme);
-    applyTextTheme(preset.textTheme || 'standard', preset.customTextTheme, colorSchemeType);
-
-    // Apply customCSS immediately to DOM (same way RisuAI does it)
+    // Apply customCSS immediately to DOM via SafeDocument
     const customCSS = preset.customCSS || '';
-    const existingStyle = document.querySelector('#customcss');
-    if (existingStyle) {
-        existingStyle.innerHTML = customCSS;
-    } else {
-        const styleElement = document.createElement('style');
-        styleElement.id = 'customcss';
-        styleElement.innerHTML = customCSS;
-        document.body.appendChild(styleElement);
+    try {
+        const rootDoc = await Risuai.getRootDocument();
+        // Look for existing customcss style tag
+        let existingStyle = await rootDoc.querySelector('#customcss');
+        if (!existingStyle) {
+            // RisuAI might use a different selector, try finding by content
+            existingStyle = await rootDoc.querySelector('style[x-id="customcss"]');
+        }
+
+        if (existingStyle) {
+            await existingStyle.setInnerHTML(customCSS);
+        } else {
+            // Create new style tag if none exists
+            const styleElement = rootDoc.createElement('style');
+            await styleElement.setAttribute('x-id', 'customcss');
+            await styleElement.setInnerHTML(customCSS);
+            const head = await rootDoc.querySelector('head');
+            if (head) {
+                await head.appendChild(styleElement);
+            }
+        }
+    } catch (e) {
+        console.log('Could not apply custom CSS directly:', e);
     }
 
-    console.log(`Theme preset "${presetName}" loaded and applied successfully!`);
+    console.log(`Theme preset "${presetName}" loaded successfully!`);
     return true;
 }
 
 /**
  * Rename a theme preset
  */
-export function renameThemePreset(oldName: string, newName: string): boolean {
-    const presets = getPresets();
+export async function renameThemePreset(oldName: string, newName: string): Promise<boolean> {
+    const presets = await getPresets();
     const preset = presets.find(p => p.name === oldName);
 
     if (!preset) {
@@ -210,10 +193,10 @@ export function renameThemePreset(oldName: string, newName: string): boolean {
     preset.name = newName;
     preset.timestamp = Date.now();
 
-    savePresets(presets);
+    await savePresets(presets);
 
     // Update character theme mappings
-    const map = getCharacterThemeMap();
+    const map = await getCharacterThemeMap();
     let updated = false;
     for (const [charName, themeName] of Object.entries(map)) {
         if (themeName === oldName) {
@@ -222,23 +205,23 @@ export function renameThemePreset(oldName: string, newName: string): boolean {
         }
     }
     if (updated) {
-        saveCharacterThemeMap(map);
+        await saveCharacterThemeMap(map);
     }
 
     // Update default theme if it was renamed
-    if (getDefaultTheme() === oldName) {
-        setDefaultTheme(newName);
+    if (await getDefaultTheme() === oldName) {
+        await setDefaultTheme(newName);
     }
 
-    console.log(`Theme preset renamed: "${oldName}" → "${newName}"`);
+    console.log(`Theme preset renamed: "${oldName}" -> "${newName}"`);
     return true;
 }
 
 /**
  * Delete a theme preset
  */
-export function deleteThemePreset(presetName: string): boolean {
-    const presets = getPresets();
+export async function deleteThemePreset(presetName: string): Promise<boolean> {
+    const presets = await getPresets();
     const filtered = presets.filter(p => p.name !== presetName);
 
     if (filtered.length === presets.length) {
@@ -246,7 +229,7 @@ export function deleteThemePreset(presetName: string): boolean {
         return false;
     }
 
-    savePresets(filtered);
+    await savePresets(filtered);
     console.log(`Theme preset "${presetName}" deleted successfully`);
     return true;
 }
@@ -254,8 +237,8 @@ export function deleteThemePreset(presetName: string): boolean {
 /**
  * List all theme presets with metadata
  */
-export function listThemePresets() {
-    const presets = getPresets();
+export async function listThemePresets() {
+    const presets = await getPresets();
     return presets.map(p => ({
         name: p.name,
         timestamp: p.timestamp,
@@ -263,17 +246,15 @@ export function listThemePresets() {
         hasHTML: !!p.guiHTML,
         theme: p.theme,
         colorSchemeName: p.colorSchemeName,
-        textTheme: p.textTheme,
-        hasCustomColors: !!p.colorScheme,
-        hasCustomTextTheme: !!p.customTextTheme
+        textTheme: p.textTheme
     }));
 }
 
 /**
  * Export a theme preset as JSON
  */
-export function exportThemePreset(presetName: string): string | null {
-    const presets = getPresets();
+export async function exportThemePreset(presetName: string): Promise<string | null> {
+    const presets = await getPresets();
     const preset = presets.find(p => p.name === presetName);
 
     if (!preset) {
@@ -287,7 +268,7 @@ export function exportThemePreset(presetName: string): string | null {
 /**
  * Import a theme preset from JSON
  */
-export function importThemePreset(presetJson: string): boolean {
+export async function importThemePreset(presetJson: string): Promise<boolean> {
     try {
         const preset = JSON.parse(presetJson);
 
@@ -296,13 +277,13 @@ export function importThemePreset(presetJson: string): boolean {
             return false;
         }
 
-        const presets = getPresets();
+        const presets = await getPresets();
         const filtered = presets.filter(p => p.name !== preset.name);
 
         preset.timestamp = Date.now();
         filtered.push(preset);
 
-        savePresets(filtered);
+        await savePresets(filtered);
         console.log(`Theme preset "${preset.name}" imported successfully`);
         return true;
     } catch (e) {
@@ -312,58 +293,144 @@ export function importThemePreset(presetJson: string): boolean {
 }
 
 /**
- * Get character to theme mapping
+ * Get character to theme mapping from pluginStorage
+ * Stored as JSON string to avoid Svelte reactive Proxy issues
  */
-export function getCharacterThemeMap(): CharacterThemeMap {
-    const mapJson = getArg(`${PLUGIN_NAME}::characterThemeMap`) as string;
-    if (!mapJson || mapJson === '') {
-        return {};
-    }
+export async function getCharacterThemeMap(): Promise<CharacterThemeMap> {
     try {
-        return JSON.parse(mapJson);
+        const data = await Risuai.pluginStorage.getItem(STORAGE_KEYS.CHARACTER_THEME_MAP);
+        // If already string (new format), parse it
+        if (typeof data === 'string') {
+            const map = JSON.parse(data);
+            return (typeof map === 'object' && map !== null) ? map : {};
+        }
+        // If object (old format), deep clone for safety
+        if (typeof data === 'object' && data !== null) {
+            return deepClone(data as CharacterThemeMap);
+        }
+        return {};
     } catch (e) {
-        console.error('Failed to parse character theme map:', e);
+        console.error('Failed to get character theme map:', e);
         return {};
     }
 }
 
 /**
- * Save character to theme mapping
+ * Save character to theme mapping to pluginStorage
+ * Stored as JSON string to avoid Svelte reactive Proxy issues
  */
-export function saveCharacterThemeMap(map: CharacterThemeMap): void {
-    setArg(`${PLUGIN_NAME}::characterThemeMap`, JSON.stringify(map));
+export async function saveCharacterThemeMap(map: CharacterThemeMap): Promise<void> {
+    try {
+        // Store as JSON string to avoid Proxy serialization issues
+        await Risuai.pluginStorage.setItem(STORAGE_KEYS.CHARACTER_THEME_MAP, JSON.stringify(map));
+    } catch (e) {
+        console.error('Failed to save character theme map:', e);
+    }
 }
 
 /**
  * Add a character theme mapping
  */
-export function addCharacterThemeMapping(charName: string, themeName: string): void {
-    const map = getCharacterThemeMap();
+export async function addCharacterThemeMapping(charName: string, themeName: string): Promise<void> {
+    const map = await getCharacterThemeMap();
     map[charName] = themeName;
-    saveCharacterThemeMap(map);
+    await saveCharacterThemeMap(map);
     console.log(`Character "${charName}" mapped to theme "${themeName}"`);
 }
 
 /**
  * Remove a character theme mapping
  */
-export function removeCharacterThemeMapping(charName: string): void {
-    const map = getCharacterThemeMap();
+export async function removeCharacterThemeMapping(charName: string): Promise<void> {
+    const map = await getCharacterThemeMap();
     delete map[charName];
-    saveCharacterThemeMap(map);
+    await saveCharacterThemeMap(map);
     console.log(`Character "${charName}" mapping removed`);
 }
 
 /**
- * Get default theme
+ * Get default theme (from pluginStorage)
  */
-export function getDefaultTheme(): string {
-    return (getArg(`${PLUGIN_NAME}::defaultTheme`) as string) || '';
+export async function getDefaultTheme(): Promise<string> {
+    try {
+        const value = await Risuai.pluginStorage.getItem(STORAGE_KEYS.DEFAULT_THEME);
+        return (typeof value === 'string') ? value : '';
+    } catch (e) {
+        return '';
+    }
 }
 
 /**
- * Set default theme
+ * Set default theme (to pluginStorage)
  */
-export function setDefaultTheme(themeName: string): void {
-    setArg(`${PLUGIN_NAME}::defaultTheme`, themeName);
+export async function setDefaultTheme(themeName: string): Promise<void> {
+    await Risuai.pluginStorage.setItem(STORAGE_KEYS.DEFAULT_THEME, themeName);
+}
+
+/**
+ * Migrate data from old argument-based storage to new pluginStorage
+ * Call this once during plugin initialization
+ */
+export async function migrateFromArgumentStorage(): Promise<void> {
+    try {
+        // Check if migration is needed (check if presets already exist in pluginStorage)
+        const existingPresets = await Risuai.pluginStorage.getItem(STORAGE_KEYS.PRESETS);
+        if (existingPresets) {
+            // Check if it's a string with content or an array with items
+            const hasData = typeof existingPresets === 'string'
+                ? existingPresets.length > 2  // More than "[]"
+                : Array.isArray(existingPresets) && existingPresets.length > 0;
+            if (hasData) {
+                // Already migrated
+                return;
+            }
+        }
+
+        console.log('Theme Preset Manager: Checking for data to migrate...');
+
+        // Try to load presets from old argument storage
+        const oldPresetsJson = await Risuai.getArgument(`${PLUGIN_NAME}::presets`) as string;
+        if (oldPresetsJson && oldPresetsJson !== '') {
+            try {
+                const oldPresets = JSON.parse(oldPresetsJson);
+                if (Array.isArray(oldPresets) && oldPresets.length > 0) {
+                    await Risuai.pluginStorage.setItem(STORAGE_KEYS.PRESETS, JSON.stringify(oldPresets));
+                    console.log(`Migrated ${oldPresets.length} presets to pluginStorage`);
+                }
+            } catch (e) {
+                console.error('Failed to parse old presets for migration:', e);
+            }
+        }
+
+        // Migrate character theme map
+        const oldMapJson = await Risuai.getArgument(`${PLUGIN_NAME}::characterThemeMap`) as string;
+        if (oldMapJson && oldMapJson !== '') {
+            try {
+                const oldMap = JSON.parse(oldMapJson);
+                if (typeof oldMap === 'object' && Object.keys(oldMap).length > 0) {
+                    await Risuai.pluginStorage.setItem(STORAGE_KEYS.CHARACTER_THEME_MAP, JSON.stringify(oldMap));
+                    console.log(`Migrated ${Object.keys(oldMap).length} character mappings to pluginStorage`);
+                }
+            } catch (e) {
+                console.error('Failed to parse old character theme map for migration:', e);
+            }
+        }
+
+        // Migrate default theme
+        const oldDefaultTheme = await Risuai.getArgument(`${PLUGIN_NAME}::defaultTheme`) as string;
+        if (oldDefaultTheme && oldDefaultTheme !== '') {
+            await Risuai.pluginStorage.setItem(STORAGE_KEYS.DEFAULT_THEME, oldDefaultTheme);
+            console.log(`Migrated default theme: ${oldDefaultTheme}`);
+        }
+
+        // Migrate auto-switch setting
+        const oldAutoSwitch = await Risuai.getArgument(`${PLUGIN_NAME}::autoSwitch`) as string;
+        if (oldAutoSwitch && oldAutoSwitch !== '') {
+            await Risuai.pluginStorage.setItem('autoSwitch', oldAutoSwitch);
+            console.log(`Migrated auto-switch setting: ${oldAutoSwitch}`);
+        }
+
+    } catch (e) {
+        console.error('Migration failed:', e);
+    }
 }

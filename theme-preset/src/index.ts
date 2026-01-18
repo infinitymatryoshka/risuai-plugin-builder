@@ -1,65 +1,64 @@
 /**
  * Theme Preset Manager Plugin for RisuAI
+ * API v3.0
  *
  * A modular, TypeScript-based plugin for managing theme presets
  * with automatic character-based theme switching.
  */
 
-import { INIT_DELAY } from './constants';
 import { getShortcut, isShortcutMatch } from './shortcuts';
 import { initAutoSwitch, stopAutoSwitch } from './auto-switch';
-import { createFloatingWindow, toggleFloatingWindow, cleanupUI, ensureSettingsButton, setupSettingsObserver } from './ui';
+import { migrateFromArgumentStorage } from './storage';
+import { createFloatingWindow, toggleFloatingWindow, cleanupUI } from './ui';
 
-console.log('🎨 Theme Preset Manager: Initializing...');
+// Main plugin initialization (wrapped in async IIFE)
+(async () => {
+    try {
+        console.log('Theme Preset Manager: Initializing...');
 
-// MutationObserver instance
-let settingsObserver: MutationObserver | null = null;
+        // Migrate data from old argument-based storage if needed
+        await migrateFromArgumentStorage();
 
-// Setup keyboard shortcut handler
-function setupKeyboardShortcut(): void {
-    document.addEventListener('keydown', (e: KeyboardEvent) => {
-        const shortcut = getShortcut();
-        if (isShortcutMatch(e, shortcut)) {
-            e.preventDefault();
-            toggleFloatingWindow();
-        }
-    });
-}
+        // Setup keyboard shortcut handler (works in iframe context)
+        document.addEventListener('keydown', async (e: KeyboardEvent) => {
+            const shortcut = await getShortcut();
+            if (isShortcutMatch(e, shortcut)) {
+                e.preventDefault();
+                await toggleFloatingWindow();
+            }
+        });
 
-// Initialize plugin
-function init(): void {
-    // Create the floating window (hidden initially)
-    createFloatingWindow();
+        // Create the floating window (hidden initially)
+        createFloatingWindow();
 
-    // Setup keyboard shortcut
-    setupKeyboardShortcut();
+        // Initialize auto-switch if enabled
+        await initAutoSwitch();
 
-    // Initialize auto-switch if enabled
-    initAutoSwitch();
+        // Register a settings button in RisuAI UI
+        await Risuai.registerButton(
+            {
+                name: 'Theme Presets',
+                icon: '🎨',
+                iconType: 'html',
+                location: 'hamburger'
+            },
+            async () => {
+                await toggleFloatingWindow();
+            }
+        );
 
-    // Add button to Display Settings
-    ensureSettingsButton();
+        // Cleanup on plugin unload
+        await Risuai.onUnload(async () => {
+            console.log('Theme Preset Manager: Cleaning up...');
+            stopAutoSwitch();
+            cleanupUI();
+        });
 
-    // Watch for DOM changes to re-inject button if needed
-    settingsObserver = setupSettingsObserver();
+        const shortcut = await getShortcut();
+        console.log('Theme Preset Manager: Ready!');
+        console.log(`   Press ${shortcut} to open the theme manager`);
 
-    console.log('🎨 Theme Preset Manager: Ready!');
-    console.log(`   Press ${getShortcut()} to open the theme manager`);
-}
-
-// Delayed initialization to ensure RisuAI is fully loaded
-setTimeout(() => {
-    init();
-}, INIT_DELAY);
-
-// Cleanup on plugin unload
-onUnload(() => {
-    console.log('🎨 Theme Preset Manager: Cleaning up...');
-    stopAutoSwitch();
-    cleanupUI();
-
-    // Disconnect observer
-    if (settingsObserver) {
-        settingsObserver.disconnect();
+    } catch (error) {
+        console.log(`Theme Preset Manager Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-});
+})();

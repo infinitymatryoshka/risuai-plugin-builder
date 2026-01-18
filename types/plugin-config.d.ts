@@ -45,6 +45,28 @@ export interface PluginConfig {
     displayName?: string;
 
     /**
+     * API version (required for v3.0)
+     * Use '3.0' for new plugins
+     * @example '3.0'
+     */
+    apiVersion?: '3.0' | '2.1' | '2.0';
+
+    /**
+     * Plugin version using semantic versioning (optional but recommended)
+     * Required for update checks
+     * @example '1.0.0'
+     */
+    version?: string;
+
+    /**
+     * URL to check for plugin updates (optional)
+     * Must support CORS and Range requests
+     * Recommended: Use GitHub raw file URL
+     * @example 'https://raw.githubusercontent.com/username/repo/main/plugin.js'
+     */
+    updateUrl?: string;
+
+    /**
      * Plugin arguments (optional)
      * Define configuration options that users can set
      * @example

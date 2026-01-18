@@ -1,19 +1,33 @@
 /**
  * Keyboard shortcuts module
+ * API v3.0 - Uses pluginStorage for persistence
  */
 
 import { PLUGIN_NAME, DEFAULT_SHORTCUT } from './constants';
 import type { ShortcutConfig } from './types';
 
+const STORAGE_KEY_SHORTCUT = 'shortcut';
+
 /**
  * Get the configured keyboard shortcut
  */
-export function getShortcut(): string {
-    const saved = getArg(`${PLUGIN_NAME}::shortcut`) as string;
+export async function getShortcut(): Promise<string> {
+    try {
+        // Try pluginStorage first
+        const saved = await Risuai.pluginStorage.getItem(STORAGE_KEY_SHORTCUT);
+        if (saved && typeof saved === 'string') {
+            return saved;
+        }
 
-    // If saved, return it
-    if (saved) {
-        return saved;
+        // Fallback: try old argument storage for migration
+        const oldSaved = await Risuai.getArgument(`${PLUGIN_NAME}::shortcut`) as string;
+        if (oldSaved && oldSaved !== '') {
+            // Migrate to pluginStorage
+            await Risuai.pluginStorage.setItem(STORAGE_KEY_SHORTCUT, oldSaved);
+            return oldSaved;
+        }
+    } catch (e) {
+        // Ignore errors
     }
 
     // Return platform-specific default
@@ -43,11 +57,11 @@ export function normalizeShortcut(shortcut: string): string {
 }
 
 /**
- * Set keyboard shortcut
+ * Set keyboard shortcut (uses pluginStorage)
  */
-export function setShortcut(shortcut: string): void {
+export async function setShortcut(shortcut: string): Promise<void> {
     const normalized = normalizeShortcut(shortcut);
-    setArg(`${PLUGIN_NAME}::shortcut`, normalized);
+    await Risuai.pluginStorage.setItem(STORAGE_KEY_SHORTCUT, normalized);
 }
 
 /**

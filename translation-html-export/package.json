@@ -1,0 +1,20 @@
+{
+  "name": "translation-html-export",
+  "version": "1.0.0",
+  "description": "Export chat as HTML with cached LLM translations",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "node ../dist/builder.js"
+  },
+  "keywords": [
+    "risuai",
+    "plugin",
+    "translation",
+    "export"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "localforage": "^1.10.0"
+  }
+}

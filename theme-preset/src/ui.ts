@@ -1,12 +1,7 @@
 /**
  * UI module for floating window and modal dialogs
- *
- * This is a simplified version. The original plugin has extensive UI features.
- * You can expand this by referencing the original theme-preset-plugin-fix3.js
+ * API v3.0 - Uses async Risuai API
  */
-
-// Declare global RisuAI API functions
-declare function getChar(): { name: string } | null;
 
 import { FEEDBACK_TIMEOUT, FOCUS_DELAY } from './constants';
 import {
@@ -37,6 +32,13 @@ const windowState: WindowState = {
     overlay: null,
     isDragging: false,
     dragOffset: { x: 0, y: 0 }
+};
+
+// Permission state - tracks if permissions have been granted this session
+// Once granted, we don't need to hide iframe for permission dialogs
+const permissionState = {
+    database: false,      // getDatabase() permission
+    mainDocument: false   // getRootDocument() permission
 };
 
 /**
@@ -455,7 +457,7 @@ export function createFloatingWindow(): HTMLElement {
             <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--risu-theme-darkborderc, #333);">
                 <div style="display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap;">
                     <div style="color: var(--risu-theme-textcolor2, #888); font-size: 0.85em;">
-                        Press <strong id="shortcut-display" style="color: var(--risu-theme-textcolor, #fff);">${formatShortcutDisplay(getShortcut())}</strong> to toggle this window
+                        Press <strong id="shortcut-display" style="color: var(--risu-theme-textcolor, #fff);">...</strong> to toggle this window
                     </div>
                     <button id="change-shortcut-btn"
                         style="padding: 4px 10px; background: var(--risu-theme-darkbutton, #444); color: var(--risu-theme-textcolor, #fff); border: none; border-radius: 4px; cursor: pointer; font-size: 0.8em; transition: opacity 0.2s;"
@@ -475,8 +477,11 @@ export function createFloatingWindow(): HTMLElement {
     // Setup event listeners
     setupEventListeners();
 
-    // Initial update
-    updatePresetList();
+    // Initial update (async but fire and forget)
+    (async () => {
+        await updatePresetList();
+        await updateShortcutDisplay();
+    })();
 
     return container;
 }
@@ -506,7 +511,7 @@ function setupEventListeners(): void {
     const saveBtn = container.querySelector('#save-preset-btn');
     const nameInput = container.querySelector('#preset-name-input') as HTMLInputElement;
 
-    saveBtn?.addEventListener('click', () => {
+    saveBtn?.addEventListener('click', async () => {
         const name = nameInput?.value.trim();
         if (!name) {
             showModal({
@@ -517,9 +522,18 @@ function setupEventListeners(): void {
             return;
         }
 
-        saveCurrentTheme(name);
+        // Hide iframe only if DB permission not yet granted (so dialog shows on top)
+        if (!permissionState.database) {
+            await Risuai.hideContainer();
+            await saveCurrentTheme(name);
+            permissionState.database = true;
+            await Risuai.showContainer('fullscreen');
+        } else {
+            await saveCurrentTheme(name);
+        }
+
         nameInput.value = '';
-        updatePresetList();
+        await updatePresetList();
         showButtonFeedback(saveBtn as HTMLButtonElement, '✓ Saved!');
     });
 
@@ -545,10 +559,10 @@ function setupEventListeners(): void {
         if (!file) return;
 
         const reader = new FileReader();
-        reader.onload = (event) => {
+        reader.onload = async (event) => {
             try {
                 const json = event.target?.result as string;
-                if (importThemePreset(json)) {
+                if (await importThemePreset(json)) {
                     showModal({
                         title: '✓ Success',
                         content: 'Theme preset imported successfully!',
@@ -556,7 +570,7 @@ function setupEventListeners(): void {
                             { text: 'OK', primary: true, onClick: () => {} }
                         ]
                     });
-                    updatePresetList();
+                    await updatePresetList();
                 } else {
                     showModal({
                         title: '❌ Error',
@@ -582,11 +596,11 @@ function setupEventListeners(): void {
 
     // Export all button
     const exportAllBtn = container.querySelector('#export-all-btn');
-    exportAllBtn?.addEventListener('click', () => {
-        const presets = getPresets();
-        const characterThemeMap = getCharacterThemeMap();
-        const defaultTheme = getDefaultTheme();
-        const autoSwitch = getAutoSwitchEnabled();
+    exportAllBtn?.addEventListener('click', async () => {
+        const presets = await getPresets();
+        const characterThemeMap = await getCharacterThemeMap();
+        const defaultTheme = await getDefaultTheme();
+        const autoSwitch = await getAutoSwitchEnabled();
 
         if (presets.length === 0 && Object.keys(characterThemeMap).length === 0) {
             showModal({
@@ -674,7 +688,18 @@ function setupEventListeners(): void {
                         return;
                     }
 
-                    const presets = backupData.themePresets || [];
+                    // Sanitize presets: remove colorScheme/customTextTheme (not supported in API v3.0)
+                    const rawPresets = backupData.themePresets || [];
+                    const presets = rawPresets.map((p: any) => ({
+                        name: p.name,
+                        customCSS: p.customCSS || '',
+                        guiHTML: p.guiHTML || '',
+                        theme: p.theme || '',
+                        colorSchemeName: p.colorSchemeName || '',
+                        textTheme: p.textTheme || 'standard',
+                        timestamp: p.timestamp || Date.now()
+                        // Note: colorScheme and customTextTheme are intentionally omitted
+                    }));
                     const characterThemeMap = backupData.characterThemeMap || {};
                     const defaultTheme = backupData.defaultTheme || '';
                     const autoSwitchEnabled = backupData.autoSwitchEnabled || false;
@@ -691,17 +716,17 @@ function setupEventListeners(): void {
                             {
                                 text: 'Replace All',
                                 primary: false,
-                                onClick: () => {
-                                    savePresets(presets);
-                                    saveCharacterThemeMap(characterThemeMap);
-                                    setDefaultTheme(defaultTheme);
-                                    setAutoSwitchEnabled(autoSwitchEnabled);
+                                onClick: async () => {
+                                    await savePresets(presets);
+                                    await saveCharacterThemeMap(characterThemeMap);
+                                    await setDefaultTheme(defaultTheme);
+                                    await setAutoSwitchEnabled(autoSwitchEnabled);
 
-                                    updatePresetList();
+                                    await updatePresetList();
 
                                     showModal({
                                         title: '✓ Success',
-                                        content: `Replaced all theme data:<br>• ${presets.length} preset(s)<br>• ${charMappingCount} character mapping(s)`,
+                                        content: `Replaced all theme data:<br>• ${presets.length} preset(s)<br>• ${charMappingCount} character mapping(s)<br>• Default theme: ${defaultTheme || 'none'}`,
                                         buttons: [
                                             { text: 'OK', primary: true, onClick: () => {} }
                                         ]
@@ -711,9 +736,9 @@ function setupEventListeners(): void {
                             {
                                 text: 'Merge',
                                 primary: true,
-                                onClick: () => {
+                                onClick: async () => {
                                     // Merge presets
-                                    const existing = getPresets();
+                                    const existing = await getPresets();
                                     const merged = [...existing];
                                     let addedPresets = 0;
 
@@ -727,19 +752,19 @@ function setupEventListeners(): void {
                                         }
                                     }
 
-                                    savePresets(merged);
+                                    await savePresets(merged);
 
                                     // Merge character theme mappings
-                                    const existingMap = getCharacterThemeMap();
+                                    const existingMap = await getCharacterThemeMap();
                                     const mergedMap = { ...existingMap, ...characterThemeMap };
-                                    saveCharacterThemeMap(mergedMap);
+                                    await saveCharacterThemeMap(mergedMap);
 
                                     // Set default theme if not already set
-                                    if (defaultTheme && !getDefaultTheme()) {
-                                        setDefaultTheme(defaultTheme);
+                                    if (defaultTheme && !await getDefaultTheme()) {
+                                        await setDefaultTheme(defaultTheme);
                                     }
 
-                                    updatePresetList();
+                                    await updatePresetList();
 
                                     showModal({
                                         title: '✓ Success',
@@ -776,21 +801,23 @@ function setupEventListeners(): void {
     const autoSwitchContent = container.querySelector('#auto-switch-content') as HTMLElement;
 
     if (autoSwitchToggle) {
-        // Set initial state
-        autoSwitchToggle.checked = getAutoSwitchEnabled();
-        if (autoSwitchToggle.checked) {
-            autoSwitchContent.style.display = 'block';
-            updateAutoSwitchUI();
-        }
+        // Set initial state (async)
+        (async () => {
+            autoSwitchToggle.checked = await getAutoSwitchEnabled();
+            if (autoSwitchToggle.checked) {
+                autoSwitchContent.style.display = 'block';
+                await updateAutoSwitchUI();
+            }
+        })();
 
-        autoSwitchToggle.addEventListener('change', () => {
+        autoSwitchToggle.addEventListener('change', async () => {
             const enabled = autoSwitchToggle.checked;
-            setAutoSwitchEnabled(enabled);
+            await setAutoSwitchEnabled(enabled);
 
             if (enabled) {
                 autoSwitchContent.style.display = 'block';
-                updateAutoSwitchUI();
-                startAutoSwitch();
+                await updateAutoSwitchUI();
+                await startAutoSwitch();
             } else {
                 autoSwitchContent.style.display = 'none';
                 stopAutoSwitch();
@@ -800,9 +827,9 @@ function setupEventListeners(): void {
 
     // Remove default theme button
     const removeDefaultBtn = container.querySelector('#remove-default-theme-btn');
-    removeDefaultBtn?.addEventListener('click', () => {
-        setDefaultTheme('');
-        updateDefaultThemeDisplay();
+    removeDefaultBtn?.addEventListener('click', async () => {
+        await setDefaultTheme('');
+        await updateDefaultThemeDisplay();
         showButtonFeedback(removeDefaultBtn as HTMLButtonElement, '✓ Removed!');
     });
 
@@ -811,7 +838,7 @@ function setupEventListeners(): void {
     const mappingCharInput = container.querySelector('#add-mapping-character') as HTMLInputElement;
     const mappingThemeSelect = container.querySelector('#add-mapping-theme') as HTMLSelectElement;
 
-    addMappingBtn?.addEventListener('click', () => {
+    addMappingBtn?.addEventListener('click', async () => {
         const character = mappingCharInput?.value.trim();
         const themeName = mappingThemeSelect?.value;
 
@@ -833,15 +860,15 @@ function setupEventListeners(): void {
             return;
         }
 
-        addCharacterThemeMapping(character, themeName);
-        updateCharacterMappingList();
-        updateThemeSelectDropdown();
+        await addCharacterThemeMapping(character, themeName);
+        await updateCharacterMappingList();
+        await updateThemeSelectDropdown();
         showButtonFeedback(addMappingBtn as HTMLButtonElement, '✓ Added!');
     });
 
     // Set as default button
     const setDefaultBtn = container.querySelector('#set-as-default-btn');
-    setDefaultBtn?.addEventListener('click', () => {
+    setDefaultBtn?.addEventListener('click', async () => {
         const themeName = mappingThemeSelect?.value;
 
         if (!themeName) {
@@ -853,15 +880,15 @@ function setupEventListeners(): void {
             return;
         }
 
-        setDefaultTheme(themeName);
-        updateDefaultThemeDisplay();
+        await setDefaultTheme(themeName);
+        await updateDefaultThemeDisplay();
         showButtonFeedback(setDefaultBtn as HTMLButtonElement, '✓ Set as Default!');
     });
 
     // Change shortcut button
     const changeShortcutBtn = container.querySelector('#change-shortcut-btn');
-    changeShortcutBtn?.addEventListener('click', () => {
-        const currentShortcut = getShortcut();
+    changeShortcutBtn?.addEventListener('click', async () => {
+        const currentShortcut = await getShortcut();
 
         showModal({
             title: '⌨️ Change Keyboard Shortcut',
@@ -897,7 +924,7 @@ function setupEventListeners(): void {
                 {
                     text: 'Save',
                     primary: true,
-                    onClick: (inputValue?: string) => {
+                    onClick: async (inputValue?: string) => {
                         const newShortcut = inputValue?.trim().toLowerCase();
 
                         if (!newShortcut) {
@@ -948,8 +975,8 @@ function setupEventListeners(): void {
                         }
 
                         // Save the new shortcut
-                        setShortcut(newShortcut);
-                        updateShortcutDisplay();
+                        await setShortcut(newShortcut);
+                        await updateShortcutDisplay();
 
                         showModal({
                             title: '✓ Success',
@@ -1009,11 +1036,11 @@ function setupEventListeners(): void {
 /**
  * Update the preset list display
  */
-function updatePresetList(): void {
+async function updatePresetList(): Promise<void> {
     const listContainer = windowState.window?.querySelector('#preset-list');
     if (!listContainer) return;
 
-    const presets = listThemePresets();
+    const presets = await listThemePresets();
     listContainer.innerHTML = '';
 
     if (presets.length === 0) {
@@ -1049,9 +1076,7 @@ function updatePresetList(): void {
         const date = new Date(preset.timestamp).toLocaleDateString();
         const detailsText = [
             date,
-            preset.theme || 'custom',
-            preset.hasCustomColors ? '🎨 Custom Colors' : null,
-            preset.hasCustomTextTheme ? '📝 Text Theme' : null
+            preset.theme || 'custom'
         ].filter(Boolean).join(' • ');
 
         item.innerHTML = `
@@ -1131,8 +1156,17 @@ function updatePresetList(): void {
 
         // Load button
         const loadBtn = item.querySelector('.load-btn');
-        loadBtn?.addEventListener('click', () => {
-            loadThemePreset(preset.name);
+        loadBtn?.addEventListener('click', async () => {
+            // Hide iframe only if mainDocument permission not yet granted
+            // Note: DB permission implies mainDocument permission (DB is higher level)
+            if (!permissionState.mainDocument && !permissionState.database) {
+                await Risuai.hideContainer();
+                await loadThemePreset(preset.name);
+                permissionState.mainDocument = true;
+                await Risuai.showContainer('fullscreen');
+            } else {
+                await loadThemePreset(preset.name);
+            }
             showButtonFeedback(loadBtn as HTMLButtonElement, '✓ Loaded!');
         });
 
@@ -1155,7 +1189,7 @@ function updatePresetList(): void {
                     {
                         text: 'Rename',
                         primary: true,
-                        onClick: (newName: string) => {
+                        onClick: async (newName: string) => {
                             if (!newName || newName.trim() === '') {
                                 showModal({
                                     title: '⚠️ Warning',
@@ -1172,7 +1206,7 @@ function updatePresetList(): void {
                             }
 
                             // Check if new name already exists
-                            const allPresets = getPresets();
+                            const allPresets = await getPresets();
                             const conflict = allPresets.find(p => p.name === newName);
                             if (conflict) {
                                 showModal({
@@ -1183,11 +1217,11 @@ function updatePresetList(): void {
                                 return;
                             }
 
-                            if (renameThemePreset(preset.name, newName)) {
-                                updatePresetList();
+                            if (await renameThemePreset(preset.name, newName)) {
+                                await updatePresetList();
                                 showModal({
                                     title: '✓ Success',
-                                    content: `Theme renamed: "<strong>${escapeHtml(preset.name)}</strong>" → "<strong>${escapeHtml(newName)}</strong>"`,
+                                    content: `Theme renamed: "<strong>${escapeHtml(preset.name)}</strong>" -> "<strong>${escapeHtml(newName)}</strong>"`,
                                     buttons: [{ text: 'OK', primary: true, onClick: () => {} }]
                                 });
                             } else {
@@ -1205,8 +1239,8 @@ function updatePresetList(): void {
 
         // Export button
         const exportBtn = item.querySelector('.export-btn');
-        exportBtn?.addEventListener('click', () => {
-            const json = exportThemePreset(preset.name);
+        exportBtn?.addEventListener('click', async () => {
+            const json = await exportThemePreset(preset.name);
             if (json) {
                 // Create a Blob from the JSON string
                 const blob = new Blob([json], { type: 'application/json' });
@@ -1243,9 +1277,9 @@ function updatePresetList(): void {
                     {
                         text: 'Delete',
                         primary: true,
-                        onClick: () => {
-                            deleteThemePreset(preset.name);
-                            updatePresetList();
+                        onClick: async () => {
+                            await deleteThemePreset(preset.name);
+                            await updatePresetList();
                         }
                     }
                 ]
@@ -1345,7 +1379,7 @@ function setupDragAndDrop(listContainer: Element): void {
         });
 
         // Desktop drop
-        item.addEventListener('drop', (e) => {
+        item.addEventListener('drop', async (e) => {
             e.preventDefault();
             if (!draggedElement || draggedElement === item) return;
 
@@ -1357,10 +1391,10 @@ function setupDragAndDrop(listContainer: Element): void {
             let newIndex = dragEvent.clientY < midpoint ? targetIndex : targetIndex + 1;
             if (draggedIndex! < newIndex) newIndex--;
 
-            reorderPresets(draggedIndex!, newIndex);
-            updatePresetList();
+            await reorderPresets(draggedIndex!, newIndex);
+            await updatePresetList();
 
-            console.log(`🎨 Moved preset from position ${draggedIndex} to ${newIndex}`);
+            console.log(`Moved preset from position ${draggedIndex} to ${newIndex}`);
         });
 
         // === Mobile: Touch Drag ===
@@ -1523,8 +1557,10 @@ function setupDragAndDrop(listContainer: Element): void {
 
                 // Perform reorder if position changed
                 if (targetIndex !== draggedIndex) {
-                    reorderPresets(draggedIndex!, targetIndex);
-                    console.log(`🎨 Moved preset from position ${draggedIndex} to ${targetIndex}`);
+                    (async () => {
+                        await reorderPresets(draggedIndex!, targetIndex);
+                    })();
+                    console.log(`Moved preset from position ${draggedIndex} to ${targetIndex}`);
 
                     // Haptic feedback
                     if ('vibrate' in navigator) {
@@ -1595,29 +1631,42 @@ function setupDragAndDrop(listContainer: Element): void {
 
 /**
  * Toggle floating window visibility
+ * In API v3.0, we need to show/hide the iframe container
  */
-export function toggleFloatingWindow(): void {
+export async function toggleFloatingWindow(): Promise<void> {
     if (!windowState.window) {
         createFloatingWindow();
     }
 
-    const isVisible = windowState.window!.style.display === 'flex';
-    windowState.window!.style.display = isVisible ? 'none' : 'flex';
-    windowState.overlay!.style.display = isVisible ? 'none' : 'block';
+    const isVisible = windowState.isVisible || false;
 
-    if (!isVisible) {
-        updatePresetList();
+    if (isVisible) {
+        // Hide the window and overlay elements
+        windowState.window!.style.display = 'none';
+        windowState.overlay!.style.display = 'none';
+        // Hide the iframe container
+        await Risuai.hideContainer();
+        windowState.isVisible = false;
+    } else {
+        // Show the window and overlay elements
+        windowState.window!.style.display = 'flex';
+        windowState.overlay!.style.display = 'block';
+        // Update content and show the iframe container
+        await updatePresetList();
+        await updateCurrentCharacterName();
+        await Risuai.showContainer('fullscreen');
+        windowState.isVisible = true;
     }
 }
 
 /**
  * Update the character mapping list display
  */
-function updateCharacterMappingList(): void {
+async function updateCharacterMappingList(): Promise<void> {
     const listContainer = windowState.window?.querySelector('#character-mapping-list');
     if (!listContainer) return;
 
-    const characterThemeMap = getCharacterThemeMap();
+    const characterThemeMap = await getCharacterThemeMap();
     const entries = Object.entries(characterThemeMap);
 
     if (entries.length === 0) {
@@ -1660,10 +1709,10 @@ function updateCharacterMappingList(): void {
 
         // Add remove handler
         const removeBtn = item.querySelector('.remove-mapping-btn');
-        removeBtn?.addEventListener('click', () => {
-            removeCharacterThemeMapping(character);
-            updateCharacterMappingList();
-            updateThemeSelectDropdown();
+        removeBtn?.addEventListener('click', async () => {
+            await removeCharacterThemeMapping(character);
+            await updateCharacterMappingList();
+            await updateThemeSelectDropdown();
             showButtonFeedback(removeBtn as HTMLButtonElement, '✓');
         });
 
@@ -1674,14 +1723,14 @@ function updateCharacterMappingList(): void {
 /**
  * Update current character name display
  */
-function updateCurrentCharacterName(): void {
+async function updateCurrentCharacterName(): Promise<void> {
     const charNameElement = windowState.window?.querySelector('#current-character-name');
     const charInput = windowState.window?.querySelector('#add-mapping-character') as HTMLInputElement;
 
     if (!charNameElement || !charInput) return;
 
     try {
-        const char = getChar();
+        const char = await Risuai.getCharacter();
         const charName = char?.name || '-';
 
         charNameElement.textContent = charName;
@@ -1695,13 +1744,13 @@ function updateCurrentCharacterName(): void {
 /**
  * Update default theme display
  */
-function updateDefaultThemeDisplay(): void {
+async function updateDefaultThemeDisplay(): Promise<void> {
     const defaultContainer = windowState.window?.querySelector('#default-theme-container') as HTMLElement;
     const defaultNameElement = windowState.window?.querySelector('#default-theme-name');
 
     if (!defaultContainer || !defaultNameElement) return;
 
-    const defaultTheme = getDefaultTheme();
+    const defaultTheme = await getDefaultTheme();
 
     if (defaultTheme) {
         defaultContainer.style.display = 'block';
@@ -1714,11 +1763,11 @@ function updateDefaultThemeDisplay(): void {
 /**
  * Update theme select dropdown options
  */
-function updateThemeSelectDropdown(): void {
+async function updateThemeSelectDropdown(): Promise<void> {
     const themeSelect = windowState.window?.querySelector('#add-mapping-theme') as HTMLSelectElement;
     if (!themeSelect) return;
 
-    const presets = getPresets();
+    const presets = await getPresets();
     const currentValue = themeSelect.value;
 
     themeSelect.innerHTML = '<option value="">Select a theme...</option>';
@@ -1739,21 +1788,22 @@ function updateThemeSelectDropdown(): void {
 /**
  * Update all auto-switch UI elements
  */
-function updateAutoSwitchUI(): void {
-    updateCurrentCharacterName();
-    updateDefaultThemeDisplay();
-    updateCharacterMappingList();
-    updateThemeSelectDropdown();
+async function updateAutoSwitchUI(): Promise<void> {
+    await updateCurrentCharacterName();
+    await updateDefaultThemeDisplay();
+    await updateCharacterMappingList();
+    await updateThemeSelectDropdown();
 }
 
 /**
  * Update shortcut display in the UI
  */
-function updateShortcutDisplay(): void {
+async function updateShortcutDisplay(): Promise<void> {
     const shortcutDisplayElement = windowState.window?.querySelector('#shortcut-display');
     if (!shortcutDisplayElement) return;
 
-    shortcutDisplayElement.textContent = formatShortcutDisplay(getShortcut());
+    const shortcut = await getShortcut();
+    shortcutDisplayElement.textContent = formatShortcutDisplay(shortcut);
 }
 
 /**

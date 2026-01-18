@@ -1,0 +1,12 @@
+{
+  "name": "debug-eval",
+  "version": "1.0.0",
+  "description": "Debug plugin with eval and cache inspection",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "node ../dist/builder.js"
+  },
+  "dependencies": {
+    "localforage": "^1.10.0"
+  }
+}

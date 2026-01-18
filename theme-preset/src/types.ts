@@ -2,28 +2,6 @@
  * Type definitions for Theme Preset Manager
  */
 
-export interface ColorScheme {
-    type: 'dark' | 'light';
-    bgcolor: string;
-    darkbg: string;
-    borderc: string;
-    selected: string;
-    draculared: string;
-    darkBorderc: string;
-    darkbutton: string;
-    textcolor: string;
-    textcolor2: string;
-}
-
-export interface TextTheme {
-    FontColorStandard: string;
-    FontColorItalic: string;
-    FontColorBold: string;
-    FontColorItalicBold: string;
-    FontColorQuote1: string | null;
-    FontColorQuote2: string | null;
-}
-
 export interface ThemePreset {
     name: string;
     customCSS: string;
@@ -32,8 +10,6 @@ export interface ThemePreset {
     colorSchemeName: string;
     textTheme: string;
     timestamp: number;
-    colorScheme?: ColorScheme;
-    customTextTheme?: TextTheme;
 }
 
 export interface ShortcutConfig {
@@ -64,4 +40,5 @@ export interface WindowState {
     overlay: HTMLElement | null;
     isDragging: boolean;
     dragOffset: { x: number; y: number };
+    isVisible?: boolean;
 }
