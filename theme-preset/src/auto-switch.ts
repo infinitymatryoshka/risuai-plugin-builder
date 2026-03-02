@@ -4,7 +4,7 @@
  */
 
 import { CHAR_POLL_INTERVAL } from './constants';
-import { getCharacterThemeMap, getDefaultTheme, loadThemePreset } from './storage';
+import { getCharacterThemeMap, getDefaultTheme, loadThemePreset, getCurrentPresetName } from './storage';
 
 let autoSwitchInterval: number | null = null;
 let lastCharacterName: string | null = null;
@@ -84,26 +84,18 @@ export async function checkAndSwitchTheme(): Promise<void> {
         const map = await getCharacterThemeMap();
         const themeName = map[char.name];
 
-        if (themeName) {
-            // Character has a specific theme mapping
-            console.log(`Auto-switching to theme: ${themeName} for character: ${char.name}`);
-            await loadThemePreset(themeName);
-            // Apply again after a short delay to ensure RisuAI doesn't override it
-            setTimeout(async () => {
-                try { await loadThemePreset(themeName); } catch (e) { /* ignore */ }
-            }, 500);
-        } else {
-            // No mapping, use default theme if set
-            const defaultTheme = await getDefaultTheme();
-            if (defaultTheme) {
-                console.log(`Auto-switching to default theme: ${defaultTheme} (no mapping for ${char.name})`);
-                await loadThemePreset(defaultTheme);
-                // Apply again after a short delay to ensure RisuAI doesn't override it
-                setTimeout(async () => {
-                    try { await loadThemePreset(defaultTheme); } catch (e) { /* ignore */ }
-                }, 500);
-            }
-        }
+        const targetTheme = themeName || await getDefaultTheme();
+        if (!targetTheme) return;
+
+        // Skip if already on the target preset
+        if (getCurrentPresetName() === targetTheme) return;
+
+        console.log(`Auto-switching to theme: ${targetTheme} for character: ${char.name}`);
+        await loadThemePreset(targetTheme);
+        // Apply again after a short delay to ensure RisuAI doesn't override it
+        setTimeout(async () => {
+            try { await loadThemePreset(targetTheme); } catch (e) { /* ignore */ }
+        }, 500);
     } catch (e) {
         console.error('Failed to apply theme:', e);
     }

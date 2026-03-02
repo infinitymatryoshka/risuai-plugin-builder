@@ -15,6 +15,17 @@ const STORAGE_KEYS = {
     SHARED_CSS: 'sharedCSS'
 } as const;
 
+/** Name of the currently loaded preset (null if none) */
+let currentLoadedPreset: string | null = null;
+
+export function getCurrentPresetName(): string | null {
+    return currentLoadedPreset;
+}
+
+export function setCurrentPresetName(name: string | null): void {
+    currentLoadedPreset = name;
+}
+
 /**
  * Deep clone for getDatabase results (still returns Svelte Proxy)
  */
@@ -172,6 +183,7 @@ export async function saveCurrentTheme(presetName: string): Promise<ThemePreset>
     filtered.push(newPreset);
 
     await savePresets(filtered);
+    currentLoadedPreset = presetName;
     console.log(`Theme preset "${presetName}" saved successfully`);
 
     return newPreset;
@@ -236,6 +248,7 @@ export async function loadThemePreset(presetName: string): Promise<boolean> {
         console.log('Could not apply custom CSS directly:', e);
     }
 
+    currentLoadedPreset = presetName;
     console.log(`Theme preset "${presetName}" loaded successfully!`);
     return true;
 }
@@ -283,6 +296,11 @@ export async function renameThemePreset(oldName: string, newName: string): Promi
         await setDefaultTheme(newName);
     }
 
+    // Update current preset tracking
+    if (currentLoadedPreset === oldName) {
+        currentLoadedPreset = newName;
+    }
+
     console.log(`Theme preset renamed: "${oldName}" -> "${newName}"`);
     return true;
 }
@@ -300,6 +318,11 @@ export async function deleteThemePreset(presetName: string): Promise<boolean> {
     }
 
     await savePresets(filtered);
+
+    if (currentLoadedPreset === presetName) {
+        currentLoadedPreset = null;
+    }
+
     console.log(`Theme preset "${presetName}" deleted successfully`);
     return true;
 }

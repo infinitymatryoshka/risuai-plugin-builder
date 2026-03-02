@@ -1,6 +1,6 @@
 //@name themepreset
 //@api 3.0
-//@version 2.2.0
+//@version 2.2.1
 //@display-name Theme Preset Manager
 //@update-url https://raw.githubusercontent.com/infinitymatryoshka/risuai-plugin-builder/main/theme-preset/dist/themepreset.js
 //@arg presets string Legacy: migrated to pluginStorage
@@ -84,6 +84,10 @@
     DEFAULT_THEME: "defaultTheme",
     SHARED_CSS: "sharedCSS"
   };
+  var currentLoadedPreset = null;
+  function getCurrentPresetName() {
+    return currentLoadedPreset;
+  }
   function deepClone(obj) {
     if (obj === null || obj === void 0) {
       return obj;
@@ -173,6 +177,7 @@
     const filtered = presets.filter((p) => p.name !== presetName);
     filtered.push(newPreset);
     await savePresets(filtered);
+    currentLoadedPreset = presetName;
     console.log(`Theme preset "${presetName}" saved successfully`);
     return newPreset;
   }
@@ -215,6 +220,7 @@
     } catch (e) {
       console.log("Could not apply custom CSS directly:", e);
     }
+    currentLoadedPreset = presetName;
     console.log(`Theme preset "${presetName}" loaded successfully!`);
     return true;
   }
@@ -247,6 +253,9 @@
     if (await getDefaultTheme() === oldName) {
       await setDefaultTheme(newName);
     }
+    if (currentLoadedPreset === oldName) {
+      currentLoadedPreset = newName;
+    }
     console.log(`Theme preset renamed: "${oldName}" -> "${newName}"`);
     return true;
   }
@@ -258,6 +267,9 @@
       return false;
     }
     await savePresets(filtered);
+    if (currentLoadedPreset === presetName) {
+      currentLoadedPreset = null;
+    }
     console.log(`Theme preset "${presetName}" deleted successfully`);
     return true;
   }
@@ -450,28 +462,19 @@
     try {
       const map = await getCharacterThemeMap();
       const themeName = map[char.name];
-      if (themeName) {
-        console.log(`Auto-switching to theme: ${themeName} for character: ${char.name}`);
-        await loadThemePreset(themeName);
-        setTimeout(async () => {
-          try {
-            await loadThemePreset(themeName);
-          } catch (e) {
-          }
-        }, 500);
-      } else {
-        const defaultTheme = await getDefaultTheme();
-        if (defaultTheme) {
-          console.log(`Auto-switching to default theme: ${defaultTheme} (no mapping for ${char.name})`);
-          await loadThemePreset(defaultTheme);
-          setTimeout(async () => {
-            try {
-              await loadThemePreset(defaultTheme);
-            } catch (e) {
-            }
-          }, 500);
+      const targetTheme = themeName || await getDefaultTheme();
+      if (!targetTheme)
+        return;
+      if (getCurrentPresetName() === targetTheme)
+        return;
+      console.log(`Auto-switching to theme: ${targetTheme} for character: ${char.name}`);
+      await loadThemePreset(targetTheme);
+      setTimeout(async () => {
+        try {
+          await loadThemePreset(targetTheme);
+        } catch (e) {
         }
-      }
+      }, 500);
     } catch (e) {
       console.error("Failed to apply theme:", e);
     }
@@ -1674,6 +1677,7 @@
         }
       }
       showButtonFeedback(applyCSSBtn, "\u2713 \uC801\uC6A9\uB428!");
+      promptSaveToPreset();
     });
     const refreshHTMLBtn = container.querySelector("#refresh-current-html-btn");
     const applyHTMLBtn = container.querySelector("#apply-current-html-btn");
@@ -1693,6 +1697,38 @@
       const html = htmlEditor?.value || "";
       await Risuai.setDatabase({ guiHTML: html });
       showButtonFeedback(applyHTMLBtn, "\u2713 \uC801\uC6A9\uB428!");
+      promptSaveToPreset();
+    });
+  }
+  function promptSaveToPreset() {
+    const presetName = getCurrentPresetName();
+    if (!presetName)
+      return;
+    showModal({
+      title: "\u{1F4BE} \uD504\uB9AC\uC14B\uC5D0\uB3C4 \uC800\uC7A5\uD560\uAE4C\uC694?",
+      content: `\uD604\uC7AC \uB85C\uB4DC\uB41C \uD504\uB9AC\uC14B: <strong>${escapeHtml(presetName)}</strong><br><br>\uBCC0\uACBD \uC0AC\uD56D\uC744 \uC774 \uD504\uB9AC\uC14B\uC5D0\uB3C4 \uC800\uC7A5\uD558\uC2DC\uACA0\uC2B5\uB2C8\uAE4C?`,
+      buttons: [
+        {
+          text: "\uC544\uB2C8\uC624",
+          primary: false,
+          onClick: () => {
+          }
+        },
+        {
+          text: "\uC608, \uC800\uC7A5",
+          primary: true,
+          onClick: async () => {
+            await saveCurrentTheme(presetName);
+            await updatePresetList();
+            showModal({
+              title: "\u2713 \uC800\uC7A5 \uC644\uB8CC",
+              content: `\uD504\uB9AC\uC14B "<strong>${escapeHtml(presetName)}</strong>"\uC774(\uAC00) \uC5C5\uB370\uC774\uD2B8\uB418\uC5C8\uC2B5\uB2C8\uB2E4.`,
+              buttons: [{ text: "OK", primary: true, onClick: () => {
+              } }]
+            });
+          }
+        }
+      ]
     });
   }
   async function updatePresetList() {

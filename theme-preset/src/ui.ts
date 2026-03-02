@@ -23,7 +23,8 @@ import {
     listThemePresets,
     getSharedCSS,
     saveSharedCSS,
-    combineCSS
+    combineCSS,
+    getCurrentPresetName
 } from './storage';
 import { getAutoSwitchEnabled, setAutoSwitchEnabled, startAutoSwitch, stopAutoSwitch } from './auto-switch';
 import { getShortcut, setShortcut, formatShortcutDisplay } from './shortcuts';
@@ -1383,6 +1384,7 @@ function setupEditorEventListeners(): void {
         }
 
         showButtonFeedback(applyCSSBtn as HTMLButtonElement, '✓ 적용됨!');
+        promptSaveToPreset();
     });
 
     // Custom HTML buttons
@@ -1404,6 +1406,40 @@ function setupEditorEventListeners(): void {
         const html = htmlEditor?.value || '';
         await Risuai.setDatabase({ guiHTML: html });
         showButtonFeedback(applyHTMLBtn as HTMLButtonElement, '✓ 적용됨!');
+        promptSaveToPreset();
+    });
+}
+
+/**
+ * Ask user whether to also save changes to the current preset
+ */
+function promptSaveToPreset(): void {
+    const presetName = getCurrentPresetName();
+    if (!presetName) return;
+
+    showModal({
+        title: '💾 프리셋에도 저장할까요?',
+        content: `현재 로드된 프리셋: <strong>${escapeHtml(presetName)}</strong><br><br>변경 사항을 이 프리셋에도 저장하시겠습니까?`,
+        buttons: [
+            {
+                text: '아니오',
+                primary: false,
+                onClick: () => {}
+            },
+            {
+                text: '예, 저장',
+                primary: true,
+                onClick: async () => {
+                    await saveCurrentTheme(presetName);
+                    await updatePresetList();
+                    showModal({
+                        title: '✓ 저장 완료',
+                        content: `프리셋 "<strong>${escapeHtml(presetName)}</strong>"이(가) 업데이트되었습니다.`,
+                        buttons: [{ text: 'OK', primary: true, onClick: () => {} }]
+                    });
+                }
+            }
+        ]
     });
 }
 
