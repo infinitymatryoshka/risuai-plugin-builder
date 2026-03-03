@@ -3,7 +3,7 @@
  * API v3.0 - Uses async Risuai API
  */
 
-import { FEEDBACK_TIMEOUT, FOCUS_DELAY, SHARED_CSS_SEPARATOR } from './constants';
+import { FEEDBACK_TIMEOUT, FOCUS_DELAY } from './constants';
 import {
     getPresets,
     savePresets,
@@ -23,7 +23,9 @@ import {
     listThemePresets,
     getSharedCSS,
     saveSharedCSS,
+    splitCSS,
     combineCSS,
+    applyCSSToDom,
     getCurrentPresetName
 } from './storage';
 import { getAutoSwitchEnabled, setAutoSwitchEnabled, startAutoSwitch, stopAutoSwitch } from './auto-switch';
@@ -38,51 +40,25 @@ const windowState: WindowState = {
     dragOffset: { x: 0, y: 0 }
 };
 
-// Tracks which permissions have been confirmed this session,
-// so we only hide the iframe for the first permission dialog.
-const grantedPermissions = new Set<string>();
-const deniedPermissions = new Set<string>();
-
-const PERMISSION_LABELS: Record<string, string> = {
-    db: 'Database access',
-    mainDom: 'Main document access',
-};
-
 /**
- * Request a plugin permission, hiding the iframe only on first request
- * so the RisuAI permission dialog is not covered by the plugin container.
- * Once granted, subsequent calls skip the hide/show cycle entirely.
- * If denied, shows an error modal (RisuAI caches denial for the session).
+ * Guard async button handlers against rapid double-clicks.
+ * Disables the button during execution and re-enables on completion.
  */
-async function requestPermission(permission: string): Promise<boolean> {
-    if (grantedPermissions.has(permission)) return true;
-
-    if (deniedPermissions.has(permission)) {
-        showModal({
-            title: '⚠️ Permission Required',
-            content: `"${PERMISSION_LABELS[permission] || permission}" permission was denied.<br>Please refresh the app to request it again.`,
-            buttons: [{ text: 'OK', primary: true }]
-        });
-        return false;
+async function withButtonGuard(btn: Element | null, fn: () => Promise<void>): Promise<void> {
+    const el = btn as HTMLButtonElement | null;
+    if (!el || el.disabled) return;
+    el.disabled = true;
+    try {
+        await fn();
+    } finally {
+        el.disabled = false;
     }
-
-    // First time requesting - hide iframe so RisuAI's dialog is visible
-    await Risuai.hideContainer();
-    const granted = await Risuai.requestPluginPermission(permission);
-    await Risuai.showContainer('fullscreen');
-
-    if (granted) {
-        grantedPermissions.add(permission);
-    } else {
-        deniedPermissions.add(permission);
-    }
-    return granted;
 }
 
 /**
  * Show a modal dialog
  */
-export function showModal(options: any): void {
+export function showModal(options: ModalOptions): void {
     const { title, content, buttons = [], input = null } = options;
 
     const overlay = document.createElement('div');
@@ -129,7 +105,7 @@ export function showModal(options: any): void {
 
     const buttonContainer = modal.querySelector('div:last-child') as HTMLElement;
 
-    buttons.forEach((btn: any) => {
+    buttons.forEach((btn) => {
         const button = document.createElement('button');
         button.textContent = btn.text;
         button.style.cssText = `
@@ -152,7 +128,7 @@ export function showModal(options: any): void {
         };
         button.onclick = () => {
             const inputEl = modal.querySelector('#modal-input') as HTMLInputElement;
-            const inputValue = input ? inputEl?.value : null;
+            const inputValue = input ? inputEl?.value : undefined;
             overlay.remove();
             if (btn.onClick) btn.onClick(inputValue);
         };
@@ -170,8 +146,8 @@ export function showModal(options: any): void {
         // Allow Enter to submit
         inputEl?.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
-                const primaryBtn = buttons.find((b: any) => b.primary);
-                if (primaryBtn) {
+                const primaryBtn = buttons.find((b) => b.primary);
+                if (primaryBtn?.onClick) {
                     overlay.remove();
                     primaryBtn.onClick(inputEl.value);
                 }
@@ -197,14 +173,14 @@ export function showButtonFeedback(
     successColor = 'var(--draculared, #50fa7b)'
 ): void {
     const origText = originalText || button.textContent || '';
-    const origBg = button.style.background;
+    const origCssText = button.style.cssText;
 
     button.textContent = successText;
     button.style.background = successColor;
 
     setTimeout(() => {
         button.textContent = origText;
-        button.style.background = origBg;
+        button.style.cssText = origCssText;
     }, FEEDBACK_TIMEOUT);
 }
 
@@ -736,7 +712,7 @@ function setupEventListeners(): void {
     const saveBtn = container.querySelector('#save-preset-btn');
     const nameInput = container.querySelector('#preset-name-input') as HTMLInputElement;
 
-    saveBtn?.addEventListener('click', async () => {
+    saveBtn?.addEventListener('click', () => withButtonGuard(saveBtn, async () => {
         const name = nameInput?.value.trim();
         if (!name) {
             showModal({
@@ -747,14 +723,12 @@ function setupEventListeners(): void {
             return;
         }
 
-        // Request DB permission lazily - only when actually saving
-        if (!await requestPermission('db')) return;
         await saveCurrentTheme(name);
 
         nameInput.value = '';
         await updatePresetList();
         showButtonFeedback(saveBtn as HTMLButtonElement, '✓ Saved!');
-    });
+    }));
 
     // Enter to save
     nameInput?.addEventListener('keypress', (e) => {
@@ -815,7 +789,7 @@ function setupEventListeners(): void {
 
     // Export all button
     const exportAllBtn = container.querySelector('#export-all-btn');
-    exportAllBtn?.addEventListener('click', async () => {
+    exportAllBtn?.addEventListener('click', () => withButtonGuard(exportAllBtn, async () => {
         const presets = await getPresets();
         const characterThemeMap = await getCharacterThemeMap();
         const defaultTheme = await getDefaultTheme();
@@ -864,7 +838,7 @@ function setupEventListeners(): void {
                 { text: 'OK', primary: true, onClick: () => {} }
             ]
         });
-    });
+    }));
 
     // Import all button
     const importAllBtn = container.querySelector('#import-all-btn');
@@ -1058,18 +1032,18 @@ function setupEventListeners(): void {
 
     // Remove default theme button
     const removeDefaultBtn = container.querySelector('#remove-default-theme-btn');
-    removeDefaultBtn?.addEventListener('click', async () => {
+    removeDefaultBtn?.addEventListener('click', () => withButtonGuard(removeDefaultBtn, async () => {
         await setDefaultTheme('');
         await updateDefaultThemeDisplay();
         showButtonFeedback(removeDefaultBtn as HTMLButtonElement, '✓ Removed!');
-    });
+    }));
 
     // Add mapping button
     const addMappingBtn = container.querySelector('#add-mapping-btn');
     const mappingCharInput = container.querySelector('#add-mapping-character') as HTMLInputElement;
     const mappingThemeSelect = container.querySelector('#add-mapping-theme') as HTMLSelectElement;
 
-    addMappingBtn?.addEventListener('click', async () => {
+    addMappingBtn?.addEventListener('click', () => withButtonGuard(addMappingBtn, async () => {
         const character = mappingCharInput?.value.trim();
         const themeName = mappingThemeSelect?.value;
 
@@ -1095,11 +1069,11 @@ function setupEventListeners(): void {
         await updateCharacterMappingList();
         await updateThemeSelectDropdown();
         showButtonFeedback(addMappingBtn as HTMLButtonElement, '✓ Added!');
-    });
+    }));
 
     // Set as default button
     const setDefaultBtn = container.querySelector('#set-as-default-btn');
-    setDefaultBtn?.addEventListener('click', async () => {
+    setDefaultBtn?.addEventListener('click', () => withButtonGuard(setDefaultBtn, async () => {
         const themeName = mappingThemeSelect?.value;
 
         if (!themeName) {
@@ -1114,7 +1088,7 @@ function setupEventListeners(): void {
         await setDefaultTheme(themeName);
         await updateDefaultThemeDisplay();
         showButtonFeedback(setDefaultBtn as HTMLButtonElement, '✓ Set as Default!');
-    });
+    }));
 
     // Change shortcut button
     const changeShortcutBtn = container.querySelector('#change-shortcut-btn');
@@ -1271,8 +1245,6 @@ async function loadEditorData(): Promise<void> {
     const container = windowState.window;
     if (!container) return;
 
-    if (!await requestPermission('db')) return;
-
     const htmlEditor = container.querySelector('#current-html-editor') as HTMLTextAreaElement;
     const sharedCSSEditor = container.querySelector('#shared-css-editor') as HTMLTextAreaElement;
     const themeCSSEditor = container.querySelector('#current-css-editor') as HTMLTextAreaElement;
@@ -1288,21 +1260,13 @@ async function loadEditorData(): Promise<void> {
         }
 
         // Load shared CSS
-        const sharedCSS = await getSharedCSS();
         if (sharedCSSEditor) {
-            sharedCSSEditor.value = sharedCSS;
+            sharedCSSEditor.value = await getSharedCSS();
         }
 
         // Load theme CSS (strip shared CSS part)
-        let themeCSS = fullCSS;
-        if (sharedCSS && fullCSS.startsWith(sharedCSS)) {
-            themeCSS = fullCSS.substring(sharedCSS.length).trim();
-            if (themeCSS.startsWith(SHARED_CSS_SEPARATOR)) {
-                themeCSS = themeCSS.substring(SHARED_CSS_SEPARATOR.length).trim();
-            }
-        }
         if (themeCSSEditor) {
-            themeCSSEditor.value = themeCSS;
+            themeCSSEditor.value = splitCSS(fullCSS).themeCSS;
         }
     } catch (e) {
         console.error('Failed to load editor data:', e);
@@ -1329,11 +1293,11 @@ function setupEditorEventListeners(): void {
         showButtonFeedback(loadSharedCSSBtn as HTMLButtonElement, '✓ 불러옴!');
     });
 
-    saveSharedCSSBtn?.addEventListener('click', async () => {
+    saveSharedCSSBtn?.addEventListener('click', () => withButtonGuard(saveSharedCSSBtn, async () => {
         const css = sharedCSSEditor?.value || '';
         await saveSharedCSS(css);
         showButtonFeedback(saveSharedCSSBtn as HTMLButtonElement, '✓ 저장됨!');
-    });
+    }));
 
     // Current theme CSS buttons
     const refreshCSSBtn = container.querySelector('#refresh-current-css-btn');
@@ -1341,26 +1305,14 @@ function setupEditorEventListeners(): void {
     const themeCSSEditor = container.querySelector('#current-css-editor') as HTMLTextAreaElement;
 
     refreshCSSBtn?.addEventListener('click', async () => {
-        if (!await requestPermission('db')) return;
         const db = await Risuai.getDatabase(['customCSS']);
-        const fullCSS = db?.customCSS || '';
-        const sharedCSS = await getSharedCSS();
-
-        let themeCSS = fullCSS;
-        if (sharedCSS && fullCSS.startsWith(sharedCSS)) {
-            themeCSS = fullCSS.substring(sharedCSS.length).trim();
-            if (themeCSS.startsWith(SHARED_CSS_SEPARATOR)) {
-                themeCSS = themeCSS.substring(SHARED_CSS_SEPARATOR.length).trim();
-            }
-        }
         if (themeCSSEditor) {
-            themeCSSEditor.value = themeCSS;
+            themeCSSEditor.value = splitCSS(db?.customCSS || '').themeCSS;
         }
         showButtonFeedback(refreshCSSBtn as HTMLButtonElement, '✓ 새로고침!');
     });
 
-    applyCSSBtn?.addEventListener('click', async () => {
-        if (!await requestPermission('db')) return;
+    applyCSSBtn?.addEventListener('click', () => withButtonGuard(applyCSSBtn, async () => {
         const themeCSS = themeCSSEditor?.value || '';
         const sharedCSS = await getSharedCSS();
         const finalCSS = combineCSS(sharedCSS, themeCSS);
@@ -1368,24 +1320,11 @@ function setupEditorEventListeners(): void {
         await Risuai.setDatabase({ customCSS: finalCSS });
 
         // Apply to DOM immediately
-        if (await requestPermission('mainDom')) {
-            try {
-                const rootDoc = await Risuai.getRootDocument();
-                let existingStyle = await rootDoc.querySelector('#customcss');
-                if (!existingStyle) {
-                    existingStyle = await rootDoc.querySelector('style[x-id="customcss"]');
-                }
-                if (existingStyle) {
-                    await existingStyle.setInnerHTML(finalCSS);
-                }
-            } catch (e) {
-                console.log('Could not apply CSS directly:', e);
-            }
-        }
+        await applyCSSToDom(finalCSS);
 
         showButtonFeedback(applyCSSBtn as HTMLButtonElement, '✓ 적용됨!');
         promptSaveToPreset();
-    });
+    }));
 
     // Custom HTML buttons
     const refreshHTMLBtn = container.querySelector('#refresh-current-html-btn');
@@ -1393,7 +1332,6 @@ function setupEditorEventListeners(): void {
     const htmlEditor = container.querySelector('#current-html-editor') as HTMLTextAreaElement;
 
     refreshHTMLBtn?.addEventListener('click', async () => {
-        if (!await requestPermission('db')) return;
         const db = await Risuai.getDatabase(['guiHTML']);
         if (htmlEditor) {
             htmlEditor.value = db?.guiHTML || '';
@@ -1401,13 +1339,12 @@ function setupEditorEventListeners(): void {
         showButtonFeedback(refreshHTMLBtn as HTMLButtonElement, '✓ 새로고침!');
     });
 
-    applyHTMLBtn?.addEventListener('click', async () => {
-        if (!await requestPermission('db')) return;
+    applyHTMLBtn?.addEventListener('click', () => withButtonGuard(applyHTMLBtn, async () => {
         const html = htmlEditor?.value || '';
         await Risuai.setDatabase({ guiHTML: html });
         showButtonFeedback(applyHTMLBtn as HTMLButtonElement, '✓ 적용됨!');
         promptSaveToPreset();
-    });
+    }));
 }
 
 /**
@@ -1566,16 +1503,14 @@ async function updatePresetList(): Promise<void> {
 
         // Load button
         const loadBtn = item.querySelector('.load-btn');
-        loadBtn?.addEventListener('click', async () => {
-            // Request mainDom permission lazily - only when actually loading a theme
-            if (!await requestPermission('mainDom')) return;
+        loadBtn?.addEventListener('click', () => withButtonGuard(loadBtn, async () => {
             await loadThemePreset(preset.name);
             showButtonFeedback(loadBtn as HTMLButtonElement, '✓ Loaded!');
-        });
+        }));
 
         // Rename button
         const renameBtn = item.querySelector('.rename-btn');
-        renameBtn?.addEventListener('click', () => {
+        renameBtn?.addEventListener('click', () => withButtonGuard(renameBtn, async () => {
             showModal({
                 title: '✏️ Rename Theme Preset',
                 content: `Enter a new name for "<strong>${escapeHtml(preset.name)}</strong>":`,
@@ -1592,7 +1527,7 @@ async function updatePresetList(): Promise<void> {
                     {
                         text: 'Rename',
                         primary: true,
-                        onClick: async (newName: string) => {
+                        onClick: async (newName?: string) => {
                             if (!newName || newName.trim() === '') {
                                 showModal({
                                     title: '⚠️ Warning',
@@ -1638,11 +1573,11 @@ async function updatePresetList(): Promise<void> {
                     }
                 ]
             });
-        });
+        }));
 
         // Export button
         const exportBtn = item.querySelector('.export-btn');
-        exportBtn?.addEventListener('click', async () => {
+        exportBtn?.addEventListener('click', () => withButtonGuard(exportBtn, async () => {
             const json = await exportThemePreset(preset.name);
             if (json) {
                 // Create a Blob from the JSON string
@@ -1663,11 +1598,11 @@ async function updatePresetList(): Promise<void> {
                 // Show success feedback
                 showButtonFeedback(exportBtn as HTMLButtonElement, '✓', '💾');
             }
-        });
+        }));
 
         // Delete button
         const deleteBtn = item.querySelector('.delete-btn');
-        deleteBtn?.addEventListener('click', () => {
+        deleteBtn?.addEventListener('click', () => withButtonGuard(deleteBtn, async () => {
             showModal({
                 title: '🗑️ Delete Theme Preset',
                 content: `Delete theme preset "<strong>${escapeHtml(preset.name)}</strong>"?<br><br>This action cannot be undone.`,
@@ -1687,7 +1622,7 @@ async function updatePresetList(): Promise<void> {
                     }
                 ]
             });
-        });
+        }));
 
         listContainer.appendChild(item);
     });
@@ -1958,19 +1893,6 @@ function setupDragAndDrop(listContainer: Element): void {
                     }
                 }
 
-                // Perform reorder if position changed
-                if (targetIndex !== draggedIndex) {
-                    (async () => {
-                        await reorderPresets(draggedIndex!, targetIndex);
-                    })();
-                    console.log(`Moved preset from position ${draggedIndex} to ${targetIndex}`);
-
-                    // Haptic feedback
-                    if ('vibrate' in navigator) {
-                        navigator.vibrate(30);
-                    }
-                }
-
                 // Reset styles
                 draggedElement.style.opacity = '1';
                 draggedElement.style.transform = '';
@@ -1987,8 +1909,21 @@ function setupDragAndDrop(listContainer: Element): void {
                     el.style.borderBottomWidth = '';
                 });
 
-                // Update list
-                updatePresetList();
+                // Perform reorder if position changed
+                if (targetIndex !== draggedIndex) {
+                    const fromIdx = draggedIndex!;
+                    console.log(`Moved preset from position ${fromIdx} to ${targetIndex}`);
+
+                    // Haptic feedback
+                    if ('vibrate' in navigator) {
+                        navigator.vibrate(30);
+                    }
+
+                    (async () => {
+                        await reorderPresets(fromIdx, targetIndex);
+                        await updatePresetList();
+                    })();
+                }
             }
 
             isDragging = false;
@@ -2112,12 +2047,12 @@ async function updateCharacterMappingList(): Promise<void> {
 
         // Add remove handler
         const removeBtn = item.querySelector('.remove-mapping-btn');
-        removeBtn?.addEventListener('click', async () => {
+        removeBtn?.addEventListener('click', () => withButtonGuard(removeBtn, async () => {
             await removeCharacterThemeMapping(character);
             await updateCharacterMappingList();
             await updateThemeSelectDropdown();
             showButtonFeedback(removeBtn as HTMLButtonElement, '✓');
-        });
+        }));
 
         listContainer.appendChild(item);
     });
@@ -2192,10 +2127,12 @@ async function updateThemeSelectDropdown(): Promise<void> {
  * Update all auto-switch UI elements
  */
 async function updateAutoSwitchUI(): Promise<void> {
-    await updateCurrentCharacterName();
-    await updateDefaultThemeDisplay();
-    await updateCharacterMappingList();
-    await updateThemeSelectDropdown();
+    await Promise.all([
+        updateCurrentCharacterName(),
+        updateDefaultThemeDisplay(),
+        updateCharacterMappingList(),
+        updateThemeSelectDropdown()
+    ]);
 }
 
 /**
@@ -2230,154 +2167,5 @@ export function cleanupUI(): void {
         windowState.overlay.remove();
         windowState.overlay = null;
     }
-
-    // Remove settings button
-    const existingButtons = document.querySelectorAll('.theme-preset-settings-btn');
-    existingButtons.forEach(btn => btn.remove());
 }
 
-/**
- * Debounce helper function
- */
-function debounce<T extends (...args: any[]) => any>(func: T, wait: number): (...args: Parameters<T>) => void {
-    let timeout: number | null = null;
-    return function(this: any, ...args: Parameters<T>) {
-        if (timeout !== null) {
-            clearTimeout(timeout);
-        }
-        timeout = window.setTimeout(() => {
-            func.apply(this, args);
-        }, wait);
-    };
-}
-
-/**
- * Inject "Theme Presets" button into Display Settings
- */
-export function ensureSettingsButton(): void {
-    // Find all existing buttons we added
-    const existingButtons = document.querySelectorAll('.theme-preset-settings-btn');
-
-    // Find the color scheme section (text-textcolor class with "colorScheme" or similar text)
-    const colorSchemeLabels = Array.from(document.querySelectorAll('span.text-textcolor')).filter(el => {
-        const text = el.textContent || '';
-        return text.includes('Color Scheme') || text.includes('색상') || text.includes('colorScheme');
-    });
-
-    if (colorSchemeLabels.length === 0) {
-        // Not in display settings, remove any existing buttons
-        existingButtons.forEach(btn => btn.remove());
-        return;
-    }
-
-    // Find the parent container
-    const label = colorSchemeLabels[0];
-    let container = label.parentElement;
-
-    if (!container) return;
-
-    // Check if button already exists in this container
-    const existingBtn = container.querySelector('.theme-preset-settings-btn');
-    if (existingBtn) return; // Already added
-
-    // Remove buttons from other locations
-    existingButtons.forEach(btn => {
-        if (!container!.contains(btn)) btn.remove();
-    });
-
-    // Find where to insert (after the custom color scheme section if it exists)
-    let insertPoint: Element | null = null;
-
-    // Look for the "textColor" label which comes after color scheme settings
-    const textColorLabels = Array.from(document.querySelectorAll('span.text-textcolor')).filter(el => {
-        const text = el.textContent || '';
-        return text.includes('Text Color') || text.includes('텍스트') || text.includes('textColor');
-    });
-
-    if (textColorLabels.length > 0) {
-        insertPoint = textColorLabels[0];
-    }
-
-    // Create button
-    const btn = document.createElement('button');
-    btn.className = 'theme-preset-settings-btn';
-    btn.style.cssText = `
-        margin-top: 16px;
-        margin-bottom: 8px;
-        padding: 10px 16px;
-        border-radius: 8px;
-        border: 1px solid var(--risu-theme-darkborderc, #333);
-        background: var(--risu-theme-darkbutton, #333);
-        color: var(--risu-theme-textcolor, #fff);
-        cursor: pointer;
-        font-weight: 500;
-        font-size: 14px;
-        width: 100%;
-        transition: all 0.2s;
-    `;
-    btn.textContent = '🎨 Theme Presets';
-    btn.onmouseover = () => {
-        btn.style.background = 'var(--risu-theme-selected, #444)';
-        btn.style.transform = 'translateY(-1px)';
-    };
-    btn.onmouseout = () => {
-        btn.style.background = 'var(--risu-theme-darkbutton, #333)';
-        btn.style.transform = '';
-    };
-    btn.onclick = (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        toggleFloatingWindow();
-    };
-
-    // Insert button
-    if (insertPoint && insertPoint.parentElement) {
-        insertPoint.parentElement.insertBefore(btn, insertPoint);
-    } else {
-        container.appendChild(btn);
-    }
-}
-
-/**
- * Setup MutationObserver to watch for settings page changes
- */
-export function setupSettingsObserver(): MutationObserver {
-    const debouncedEnsureSettingsButton = debounce(ensureSettingsButton, 300);
-    const observer = new MutationObserver(() => {
-        debouncedEnsureSettingsButton();
-    });
-
-    // Find the settings container to observe (more efficient than observing entire body)
-    const findSettingsContainer = (): Element | null => {
-        // Try to find the main settings container
-        // Look for the Display Settings h2 header and observe its parent
-        const headers = Array.from(document.querySelectorAll('h2')).filter(el => {
-            const text = el.textContent || '';
-            return text.includes('Display') || text.includes('디스플레이') || text.includes('display');
-        });
-
-        if (headers.length > 0) {
-            // Get the parent container that holds all settings
-            let container: Element | null = headers[0].parentElement;
-            // Go up a few levels to get a larger container that encompasses submenu changes
-            for (let i = 0; i < 2 && container && container.parentElement; i++) {
-                container = container.parentElement;
-            }
-            return container;
-        }
-        return null;
-    };
-
-    const settingsContainer = findSettingsContainer();
-
-    if (settingsContainer) {
-        observer.observe(settingsContainer, { childList: true, subtree: true });
-        console.log('🎨 Theme Preset: Observing settings container only');
-    } else {
-        // Fallback to body if we can't find the settings container
-        observer.observe(document.body, { childList: true, subtree: true });
-        console.log('🎨 Theme Preset: Fallback to observing entire body');
-    }
-
-    return observer;
-}

@@ -29,9 +29,13 @@ export interface ModalOptions {
     content: string;
     buttons?: Array<{
         text: string;
-        onClick: () => void;
+        onClick?: (inputValue?: string) => void | Promise<void>;
         primary?: boolean;
     }>;
+    input?: {
+        value?: string;
+        placeholder?: string;
+    };
     onClose?: () => void;
 }
 

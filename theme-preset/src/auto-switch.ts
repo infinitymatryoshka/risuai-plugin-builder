@@ -9,6 +9,27 @@ import { getCharacterThemeMap, getDefaultTheme, loadThemePreset, getCurrentPrese
 let autoSwitchInterval: number | null = null;
 let lastCharacterName: string | null = null;
 let lastCharacterIndex: number = -1;
+let isSwitching: boolean = false;
+
+/** Pending delayed timers - cleared on stop */
+const pendingTimers: number[] = [];
+
+function addTimer(fn: () => void, ms: number): void {
+    const id = window.setTimeout(() => {
+        // Remove from tracking after execution
+        const idx = pendingTimers.indexOf(id);
+        if (idx !== -1) pendingTimers.splice(idx, 1);
+        fn();
+    }, ms);
+    pendingTimers.push(id);
+}
+
+function clearAllTimers(): void {
+    for (const id of pendingTimers) {
+        clearTimeout(id);
+    }
+    pendingTimers.length = 0;
+}
 
 const STORAGE_KEY_AUTO_SWITCH = 'autoSwitch';
 
@@ -41,12 +62,12 @@ export async function setAutoSwitchEnabled(enabled: boolean): Promise<void> {
 }
 
 /**
- * Check current character and switch theme if needed
+ * Check current character and switch theme if needed.
+ * Only runs when auto-switch interval is active (no redundant storage reads).
  */
 export async function checkAndSwitchTheme(): Promise<void> {
-    if (!await getAutoSwitchEnabled()) {
-        return;
-    }
+    // If interval was stopped (disabled), skip - avoids stale timer execution
+    if (autoSwitchInterval === null || isSwitching) return;
 
     // Quick index check first (lightweight call) to skip unnecessary full character fetch
     let currentIndex: number;
@@ -90,12 +111,17 @@ export async function checkAndSwitchTheme(): Promise<void> {
         // Skip if already on the target preset
         if (getCurrentPresetName() === targetTheme) return;
 
-        console.log(`Auto-switching to theme: ${targetTheme} for character: ${char.name}`);
-        await loadThemePreset(targetTheme);
-        // Apply again after a short delay to ensure RisuAI doesn't override it
-        setTimeout(async () => {
-            try { await loadThemePreset(targetTheme); } catch (e) { /* ignore */ }
-        }, 500);
+        isSwitching = true;
+        try {
+            console.log(`Auto-switching to theme: ${targetTheme} for character: ${char.name}`);
+            await loadThemePreset(targetTheme);
+            // Apply again after a short delay to ensure RisuAI doesn't override it
+            addTimer(async () => {
+                try { await loadThemePreset(targetTheme); } catch (e) { /* ignore */ }
+            }, 500);
+        } finally {
+            isSwitching = false;
+        }
     } catch (e) {
         console.error('Failed to apply theme:', e);
     }
@@ -111,18 +137,18 @@ export async function startAutoSwitch(): Promise<void> {
 
     console.log('Theme auto-switch enabled');
 
+    // Set up interval first so checkAndSwitchTheme sees it as active
+    autoSwitchInterval = window.setInterval(async () => {
+        await checkAndSwitchTheme();
+    }, CHAR_POLL_INTERVAL);
+
     // Check immediately
     await checkAndSwitchTheme();
 
     // Apply theme again after delays to ensure it sticks after RisuAI initialization
     // RisuAI might apply its own color scheme during page load
-    setTimeout(async () => await checkAndSwitchTheme(), 1000);
-    setTimeout(async () => await checkAndSwitchTheme(), 2000);
-
-    // Then check periodically
-    autoSwitchInterval = window.setInterval(async () => {
-        await checkAndSwitchTheme();
-    }, CHAR_POLL_INTERVAL);
+    addTimer(async () => await checkAndSwitchTheme(), 1000);
+    addTimer(async () => await checkAndSwitchTheme(), 2000);
 }
 
 /**
@@ -132,6 +158,7 @@ export function stopAutoSwitch(): void {
     if (autoSwitchInterval !== null) {
         clearInterval(autoSwitchInterval);
         autoSwitchInterval = null;
+        clearAllTimers();
         lastCharacterName = null;
         lastCharacterIndex = -1;
         console.log('Theme auto-switch disabled');

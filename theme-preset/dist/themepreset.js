@@ -1,6 +1,6 @@
 //@name themepreset
 //@api 3.0
-//@version 2.2.1
+//@version 2.3.0
 //@display-name Theme Preset Manager
 //@update-url https://raw.githubusercontent.com/infinitymatryoshka/risuai-plugin-builder/main/theme-preset/dist/themepreset.js
 //@arg presets string Legacy: migrated to pluginStorage
@@ -82,11 +82,33 @@
     PRESETS: "presets",
     CHARACTER_THEME_MAP: "characterThemeMap",
     DEFAULT_THEME: "defaultTheme",
-    SHARED_CSS: "sharedCSS"
+    SHARED_CSS: "sharedCSS",
+    CURRENT_PRESET: "currentPreset"
   };
+  var storageLock = Promise.resolve();
+  function withLock(fn) {
+    const prev = storageLock;
+    let resolve;
+    storageLock = new Promise((r) => {
+      resolve = r;
+    });
+    return prev.then(fn).finally(() => resolve());
+  }
   var currentLoadedPreset = null;
   function getCurrentPresetName() {
     return currentLoadedPreset;
+  }
+  function setCurrentPresetName(name) {
+    currentLoadedPreset = name;
+    Risuai.pluginStorage.setItem(STORAGE_KEYS.CURRENT_PRESET, name || "");
+  }
+  async function initCurrentPreset() {
+    try {
+      const value = await Risuai.pluginStorage.getItem(STORAGE_KEYS.CURRENT_PRESET);
+      currentLoadedPreset = typeof value === "string" && value ? value : null;
+    } catch (e) {
+      currentLoadedPreset = null;
+    }
   }
   function deepClone(obj) {
     if (obj === null || obj === void 0) {
@@ -111,6 +133,19 @@
       console.error("Failed to save shared CSS:", e);
     }
   }
+  function splitCSS(fullCSS) {
+    const separatorIndex = fullCSS.indexOf(SHARED_CSS_SEPARATOR);
+    if (separatorIndex === -1) {
+      return {
+        sharedCSS: "",
+        themeCSS: fullCSS
+      };
+    }
+    return {
+      sharedCSS: fullCSS.substring(0, separatorIndex).trim(),
+      themeCSS: fullCSS.substring(separatorIndex + SHARED_CSS_SEPARATOR.length).trim()
+    };
+  }
   function combineCSS(sharedCSS, themeCSS) {
     if (!sharedCSS && !themeCSS)
       return "";
@@ -119,6 +154,28 @@
     if (!themeCSS)
       return sharedCSS + "\n\n" + SHARED_CSS_SEPARATOR + "\n";
     return sharedCSS + "\n\n" + SHARED_CSS_SEPARATOR + "\n\n" + themeCSS;
+  }
+  async function applyCSSToDom(css) {
+    try {
+      const rootDoc = await Risuai.getRootDocument();
+      let existingStyle = await rootDoc.querySelector("#customcss");
+      if (!existingStyle) {
+        existingStyle = await rootDoc.querySelector('style[x-id="customcss"]');
+      }
+      if (existingStyle) {
+        await existingStyle.setInnerHTML(css);
+      } else {
+        const styleElement = rootDoc.createElement("style");
+        await styleElement.setAttribute("x-id", "customcss");
+        await styleElement.setInnerHTML(css);
+        const head = await rootDoc.querySelector("head");
+        if (head) {
+          await head.appendChild(styleElement);
+        }
+      }
+    } catch (e) {
+      console.log("Could not apply CSS to DOM:", e);
+    }
   }
   async function getPresets() {
     try {
@@ -143,135 +200,117 @@
       console.error("Failed to save presets:", e);
     }
   }
-  async function reorderPresets(fromIndex, toIndex) {
-    const presets = await getPresets();
-    if (fromIndex < 0 || fromIndex >= presets.length || toIndex < 0 || toIndex >= presets.length) {
-      return false;
-    }
-    const [removed] = presets.splice(fromIndex, 1);
-    presets.splice(toIndex, 0, removed);
-    await savePresets(presets);
-    return true;
-  }
-  async function saveCurrentTheme(presetName) {
-    const db = deepClone(await Risuai.getDatabase(["customCSS", "guiHTML", "theme", "colorSchemeName", "textTheme"]));
-    const presets = await getPresets();
-    let cssToSave = db?.customCSS || "";
-    const sharedCSS = await getSharedCSS();
-    const fullCSS = cssToSave;
-    if (sharedCSS && fullCSS.startsWith(sharedCSS)) {
-      cssToSave = fullCSS.substring(sharedCSS.length).trim();
-      if (cssToSave.startsWith(SHARED_CSS_SEPARATOR)) {
-        cssToSave = cssToSave.substring(SHARED_CSS_SEPARATOR.length).trim();
+  function reorderPresets(fromIndex, toIndex) {
+    return withLock(async () => {
+      const presets = await getPresets();
+      if (fromIndex < 0 || fromIndex >= presets.length || toIndex < 0 || toIndex >= presets.length) {
+        return false;
       }
-    }
-    const newPreset = {
-      name: presetName,
-      customCSS: cssToSave,
-      guiHTML: db?.guiHTML || "",
-      theme: db?.theme || "",
-      colorSchemeName: db?.colorSchemeName || "",
-      textTheme: db?.textTheme || "standard",
-      timestamp: Date.now()
-    };
-    const filtered = presets.filter((p) => p.name !== presetName);
-    filtered.push(newPreset);
-    await savePresets(filtered);
-    currentLoadedPreset = presetName;
-    console.log(`Theme preset "${presetName}" saved successfully`);
-    return newPreset;
+      const [removed] = presets.splice(fromIndex, 1);
+      presets.splice(toIndex, 0, removed);
+      await savePresets(presets);
+      return true;
+    });
   }
-  async function loadThemePreset(presetName) {
-    const presets = await getPresets();
-    const preset = presets.find((p) => p.name === presetName);
-    if (!preset) {
-      console.error(`Theme preset "${presetName}" not found`);
-      return false;
-    }
-    const sharedCSS = await getSharedCSS();
-    const themeCSS = preset.customCSS || "";
-    const finalCSS = combineCSS(sharedCSS, themeCSS);
-    const dbUpdate = {
-      customCSS: finalCSS,
-      guiHTML: preset.guiHTML || "",
-      theme: preset.theme || "",
-      colorSchemeName: preset.colorSchemeName || "",
-      textTheme: preset.textTheme || "standard"
-    };
-    await Risuai.setDatabase(dbUpdate);
-    const customCSS = finalCSS;
-    try {
-      const rootDoc = await Risuai.getRootDocument();
-      let existingStyle = await rootDoc.querySelector("#customcss");
-      if (!existingStyle) {
-        existingStyle = await rootDoc.querySelector('style[x-id="customcss"]');
+  function saveCurrentTheme(presetName) {
+    return withLock(async () => {
+      const db = deepClone(await Risuai.getDatabase(["customCSS", "guiHTML", "theme", "colorSchemeName", "textTheme"]));
+      const presets = await getPresets();
+      const { themeCSS: cssToSave } = splitCSS(db?.customCSS || "");
+      const newPreset = {
+        name: presetName,
+        customCSS: cssToSave,
+        guiHTML: db?.guiHTML || "",
+        theme: db?.theme || "",
+        colorSchemeName: db?.colorSchemeName || "",
+        textTheme: db?.textTheme || "standard",
+        timestamp: Date.now()
+      };
+      const filtered = presets.filter((p) => p.name !== presetName);
+      filtered.push(newPreset);
+      await savePresets(filtered);
+      setCurrentPresetName(presetName);
+      console.log(`Theme preset "${presetName}" saved successfully`);
+      return newPreset;
+    });
+  }
+  function loadThemePreset(presetName) {
+    return withLock(async () => {
+      const presets = await getPresets();
+      const preset = presets.find((p) => p.name === presetName);
+      if (!preset) {
+        console.error(`Theme preset "${presetName}" not found`);
+        return false;
       }
-      if (existingStyle) {
-        await existingStyle.setInnerHTML(customCSS);
-      } else {
-        const styleElement = rootDoc.createElement("style");
-        await styleElement.setAttribute("x-id", "customcss");
-        await styleElement.setInnerHTML(customCSS);
-        const head = await rootDoc.querySelector("head");
-        if (head) {
-          await head.appendChild(styleElement);
+      const sharedCSS = await getSharedCSS();
+      const themeCSS = preset.customCSS || "";
+      const finalCSS = combineCSS(sharedCSS, themeCSS);
+      const dbUpdate = {
+        customCSS: finalCSS,
+        guiHTML: preset.guiHTML || "",
+        theme: preset.theme || "",
+        colorSchemeName: preset.colorSchemeName || "",
+        textTheme: preset.textTheme || "standard"
+      };
+      await Risuai.setDatabase(dbUpdate);
+      await applyCSSToDom(finalCSS);
+      setCurrentPresetName(presetName);
+      console.log(`Theme preset "${presetName}" loaded successfully!`);
+      return true;
+    });
+  }
+  function renameThemePreset(oldName, newName) {
+    return withLock(async () => {
+      const presets = await getPresets();
+      const preset = presets.find((p) => p.name === oldName);
+      if (!preset) {
+        console.error(`Theme preset "${oldName}" not found`);
+        return false;
+      }
+      const conflict = presets.find((p) => p.name === newName && p.name !== oldName);
+      if (conflict) {
+        console.error(`Theme preset "${newName}" already exists`);
+        return false;
+      }
+      preset.name = newName;
+      preset.timestamp = Date.now();
+      await savePresets(presets);
+      const map = await getCharacterThemeMap();
+      let updated = false;
+      for (const [charName, themeName] of Object.entries(map)) {
+        if (themeName === oldName) {
+          map[charName] = newName;
+          updated = true;
         }
       }
-    } catch (e) {
-      console.log("Could not apply custom CSS directly:", e);
-    }
-    currentLoadedPreset = presetName;
-    console.log(`Theme preset "${presetName}" loaded successfully!`);
-    return true;
-  }
-  async function renameThemePreset(oldName, newName) {
-    const presets = await getPresets();
-    const preset = presets.find((p) => p.name === oldName);
-    if (!preset) {
-      console.error(`Theme preset "${oldName}" not found`);
-      return false;
-    }
-    const conflict = presets.find((p) => p.name === newName && p.name !== oldName);
-    if (conflict) {
-      console.error(`Theme preset "${newName}" already exists`);
-      return false;
-    }
-    preset.name = newName;
-    preset.timestamp = Date.now();
-    await savePresets(presets);
-    const map = await getCharacterThemeMap();
-    let updated = false;
-    for (const [charName, themeName] of Object.entries(map)) {
-      if (themeName === oldName) {
-        map[charName] = newName;
-        updated = true;
+      if (updated) {
+        await saveCharacterThemeMap(map);
       }
-    }
-    if (updated) {
-      await saveCharacterThemeMap(map);
-    }
-    if (await getDefaultTheme() === oldName) {
-      await setDefaultTheme(newName);
-    }
-    if (currentLoadedPreset === oldName) {
-      currentLoadedPreset = newName;
-    }
-    console.log(`Theme preset renamed: "${oldName}" -> "${newName}"`);
-    return true;
+      if (await getDefaultTheme() === oldName) {
+        await setDefaultTheme(newName);
+      }
+      if (currentLoadedPreset === oldName) {
+        setCurrentPresetName(newName);
+      }
+      console.log(`Theme preset renamed: "${oldName}" -> "${newName}"`);
+      return true;
+    });
   }
-  async function deleteThemePreset(presetName) {
-    const presets = await getPresets();
-    const filtered = presets.filter((p) => p.name !== presetName);
-    if (filtered.length === presets.length) {
-      console.error(`Theme preset "${presetName}" not found`);
-      return false;
-    }
-    await savePresets(filtered);
-    if (currentLoadedPreset === presetName) {
-      currentLoadedPreset = null;
-    }
-    console.log(`Theme preset "${presetName}" deleted successfully`);
-    return true;
+  function deleteThemePreset(presetName) {
+    return withLock(async () => {
+      const presets = await getPresets();
+      const filtered = presets.filter((p) => p.name !== presetName);
+      if (filtered.length === presets.length) {
+        console.error(`Theme preset "${presetName}" not found`);
+        return false;
+      }
+      await savePresets(filtered);
+      if (currentLoadedPreset === presetName) {
+        setCurrentPresetName(null);
+      }
+      console.log(`Theme preset "${presetName}" deleted successfully`);
+      return true;
+    });
   }
   async function listThemePresets() {
     const presets = await getPresets();
@@ -336,17 +375,21 @@
       console.error("Failed to save character theme map:", e);
     }
   }
-  async function addCharacterThemeMapping(charName, themeName) {
-    const map = await getCharacterThemeMap();
-    map[charName] = themeName;
-    await saveCharacterThemeMap(map);
-    console.log(`Character "${charName}" mapped to theme "${themeName}"`);
+  function addCharacterThemeMapping(charName, themeName) {
+    return withLock(async () => {
+      const map = await getCharacterThemeMap();
+      map[charName] = themeName;
+      await saveCharacterThemeMap(map);
+      console.log(`Character "${charName}" mapped to theme "${themeName}"`);
+    });
   }
-  async function removeCharacterThemeMapping(charName) {
-    const map = await getCharacterThemeMap();
-    delete map[charName];
-    await saveCharacterThemeMap(map);
-    console.log(`Character "${charName}" mapping removed`);
+  function removeCharacterThemeMapping(charName) {
+    return withLock(async () => {
+      const map = await getCharacterThemeMap();
+      delete map[charName];
+      await saveCharacterThemeMap(map);
+      console.log(`Character "${charName}" mapping removed`);
+    });
   }
   async function getDefaultTheme() {
     try {
@@ -412,6 +455,23 @@
   var autoSwitchInterval = null;
   var lastCharacterName = null;
   var lastCharacterIndex = -1;
+  var isSwitching = false;
+  var pendingTimers = [];
+  function addTimer(fn, ms) {
+    const id = window.setTimeout(() => {
+      const idx = pendingTimers.indexOf(id);
+      if (idx !== -1)
+        pendingTimers.splice(idx, 1);
+      fn();
+    }, ms);
+    pendingTimers.push(id);
+  }
+  function clearAllTimers() {
+    for (const id of pendingTimers) {
+      clearTimeout(id);
+    }
+    pendingTimers.length = 0;
+  }
   var STORAGE_KEY_AUTO_SWITCH = "autoSwitch";
   async function getAutoSwitchEnabled() {
     try {
@@ -433,9 +493,8 @@
     }
   }
   async function checkAndSwitchTheme() {
-    if (!await getAutoSwitchEnabled()) {
+    if (autoSwitchInterval === null || isSwitching)
       return;
-    }
     let currentIndex;
     try {
       currentIndex = await Risuai.getCurrentCharacterIndex();
@@ -467,14 +526,19 @@
         return;
       if (getCurrentPresetName() === targetTheme)
         return;
-      console.log(`Auto-switching to theme: ${targetTheme} for character: ${char.name}`);
-      await loadThemePreset(targetTheme);
-      setTimeout(async () => {
-        try {
-          await loadThemePreset(targetTheme);
-        } catch (e) {
-        }
-      }, 500);
+      isSwitching = true;
+      try {
+        console.log(`Auto-switching to theme: ${targetTheme} for character: ${char.name}`);
+        await loadThemePreset(targetTheme);
+        addTimer(async () => {
+          try {
+            await loadThemePreset(targetTheme);
+          } catch (e) {
+          }
+        }, 500);
+      } finally {
+        isSwitching = false;
+      }
     } catch (e) {
       console.error("Failed to apply theme:", e);
     }
@@ -484,17 +548,18 @@
       return;
     }
     console.log("Theme auto-switch enabled");
-    await checkAndSwitchTheme();
-    setTimeout(async () => await checkAndSwitchTheme(), 1e3);
-    setTimeout(async () => await checkAndSwitchTheme(), 2e3);
     autoSwitchInterval = window.setInterval(async () => {
       await checkAndSwitchTheme();
     }, CHAR_POLL_INTERVAL);
+    await checkAndSwitchTheme();
+    addTimer(async () => await checkAndSwitchTheme(), 1e3);
+    addTimer(async () => await checkAndSwitchTheme(), 2e3);
   }
   function stopAutoSwitch() {
     if (autoSwitchInterval !== null) {
       clearInterval(autoSwitchInterval);
       autoSwitchInterval = null;
+      clearAllTimers();
       lastCharacterName = null;
       lastCharacterIndex = -1;
       console.log("Theme auto-switch disabled");
@@ -513,32 +578,16 @@
     isDragging: false,
     dragOffset: { x: 0, y: 0 }
   };
-  var grantedPermissions = /* @__PURE__ */ new Set();
-  var deniedPermissions = /* @__PURE__ */ new Set();
-  var PERMISSION_LABELS = {
-    db: "Database access",
-    mainDom: "Main document access"
-  };
-  async function requestPermission(permission) {
-    if (grantedPermissions.has(permission))
-      return true;
-    if (deniedPermissions.has(permission)) {
-      showModal({
-        title: "\u26A0\uFE0F Permission Required",
-        content: `"${PERMISSION_LABELS[permission] || permission}" permission was denied.<br>Please refresh the app to request it again.`,
-        buttons: [{ text: "OK", primary: true }]
-      });
-      return false;
+  async function withButtonGuard(btn, fn) {
+    const el = btn;
+    if (!el || el.disabled)
+      return;
+    el.disabled = true;
+    try {
+      await fn();
+    } finally {
+      el.disabled = false;
     }
-    await Risuai.hideContainer();
-    const granted = await Risuai.requestPluginPermission(permission);
-    await Risuai.showContainer("fullscreen");
-    if (granted) {
-      grantedPermissions.add(permission);
-    } else {
-      deniedPermissions.add(permission);
-    }
-    return granted;
   }
   function showModal(options) {
     const { title, content, buttons = [], input = null } = options;
@@ -605,7 +654,7 @@
       };
       button.onclick = () => {
         const inputEl = modal.querySelector("#modal-input");
-        const inputValue = input ? inputEl?.value : null;
+        const inputValue = input ? inputEl?.value : void 0;
         overlay.remove();
         if (btn.onClick)
           btn.onClick(inputValue);
@@ -620,7 +669,7 @@
       inputEl?.addEventListener("keypress", (e) => {
         if (e.key === "Enter") {
           const primaryBtn = buttons.find((b) => b.primary);
-          if (primaryBtn) {
+          if (primaryBtn?.onClick) {
             overlay.remove();
             primaryBtn.onClick(inputEl.value);
           }
@@ -635,12 +684,12 @@
   }
   function showButtonFeedback(button, successText, originalText, successColor = "var(--draculared, #50fa7b)") {
     const origText = originalText || button.textContent || "";
-    const origBg = button.style.background;
+    const origCssText = button.style.cssText;
     button.textContent = successText;
     button.style.background = successColor;
     setTimeout(() => {
       button.textContent = origText;
-      button.style.background = origBg;
+      button.style.cssText = origCssText;
     }, FEEDBACK_TIMEOUT);
   }
   function createFloatingWindow() {
@@ -1130,7 +1179,7 @@
     setupEditorEventListeners();
     const saveBtn = container.querySelector("#save-preset-btn");
     const nameInput = container.querySelector("#preset-name-input");
-    saveBtn?.addEventListener("click", async () => {
+    saveBtn?.addEventListener("click", () => withButtonGuard(saveBtn, async () => {
       const name = nameInput?.value.trim();
       if (!name) {
         showModal({
@@ -1140,13 +1189,11 @@
         });
         return;
       }
-      if (!await requestPermission("db"))
-        return;
       await saveCurrentTheme(name);
       nameInput.value = "";
       await updatePresetList();
       showButtonFeedback(saveBtn, "\u2713 Saved!");
-    });
+    }));
     nameInput?.addEventListener("keypress", (e) => {
       if (e.key === "Enter") {
         saveBtn?.dispatchEvent(new Event("click"));
@@ -1201,7 +1248,7 @@
       reader.readAsText(file);
     });
     const exportAllBtn = container.querySelector("#export-all-btn");
-    exportAllBtn?.addEventListener("click", async () => {
+    exportAllBtn?.addEventListener("click", () => withButtonGuard(exportAllBtn, async () => {
       const presets = await getPresets();
       const characterThemeMap = await getCharacterThemeMap();
       const defaultTheme = await getDefaultTheme();
@@ -1246,7 +1293,7 @@
           } }
         ]
       });
-    });
+    }));
     const importAllBtn = container.querySelector("#import-all-btn");
     importAllBtn?.addEventListener("click", () => {
       const input = document.createElement("input");
@@ -1411,15 +1458,15 @@
       });
     }
     const removeDefaultBtn = container.querySelector("#remove-default-theme-btn");
-    removeDefaultBtn?.addEventListener("click", async () => {
+    removeDefaultBtn?.addEventListener("click", () => withButtonGuard(removeDefaultBtn, async () => {
       await setDefaultTheme("");
       await updateDefaultThemeDisplay();
       showButtonFeedback(removeDefaultBtn, "\u2713 Removed!");
-    });
+    }));
     const addMappingBtn = container.querySelector("#add-mapping-btn");
     const mappingCharInput = container.querySelector("#add-mapping-character");
     const mappingThemeSelect = container.querySelector("#add-mapping-theme");
-    addMappingBtn?.addEventListener("click", async () => {
+    addMappingBtn?.addEventListener("click", () => withButtonGuard(addMappingBtn, async () => {
       const character = mappingCharInput?.value.trim();
       const themeName = mappingThemeSelect?.value;
       if (!character) {
@@ -1442,9 +1489,9 @@
       await updateCharacterMappingList();
       await updateThemeSelectDropdown();
       showButtonFeedback(addMappingBtn, "\u2713 Added!");
-    });
+    }));
     const setDefaultBtn = container.querySelector("#set-as-default-btn");
-    setDefaultBtn?.addEventListener("click", async () => {
+    setDefaultBtn?.addEventListener("click", () => withButtonGuard(setDefaultBtn, async () => {
       const themeName = mappingThemeSelect?.value;
       if (!themeName) {
         showModal({
@@ -1457,7 +1504,7 @@
       await setDefaultTheme(themeName);
       await updateDefaultThemeDisplay();
       showButtonFeedback(setDefaultBtn, "\u2713 Set as Default!");
-    });
+    }));
     const changeShortcutBtn = container.querySelector("#change-shortcut-btn");
     changeShortcutBtn?.addEventListener("click", async () => {
       const currentShortcut = await getShortcut();
@@ -1585,8 +1632,6 @@
     const container = windowState.window;
     if (!container)
       return;
-    if (!await requestPermission("db"))
-      return;
     const htmlEditor = container.querySelector("#current-html-editor");
     const sharedCSSEditor = container.querySelector("#shared-css-editor");
     const themeCSSEditor = container.querySelector("#current-css-editor");
@@ -1597,19 +1642,11 @@
       if (htmlEditor) {
         htmlEditor.value = guiHTML;
       }
-      const sharedCSS = await getSharedCSS();
       if (sharedCSSEditor) {
-        sharedCSSEditor.value = sharedCSS;
-      }
-      let themeCSS = fullCSS;
-      if (sharedCSS && fullCSS.startsWith(sharedCSS)) {
-        themeCSS = fullCSS.substring(sharedCSS.length).trim();
-        if (themeCSS.startsWith(SHARED_CSS_SEPARATOR)) {
-          themeCSS = themeCSS.substring(SHARED_CSS_SEPARATOR.length).trim();
-        }
+        sharedCSSEditor.value = await getSharedCSS();
       }
       if (themeCSSEditor) {
-        themeCSSEditor.value = themeCSS;
+        themeCSSEditor.value = splitCSS(fullCSS).themeCSS;
       }
     } catch (e) {
       console.error("Failed to load editor data:", e);
@@ -1629,76 +1666,46 @@
       }
       showButtonFeedback(loadSharedCSSBtn, "\u2713 \uBD88\uB7EC\uC634!");
     });
-    saveSharedCSSBtn?.addEventListener("click", async () => {
+    saveSharedCSSBtn?.addEventListener("click", () => withButtonGuard(saveSharedCSSBtn, async () => {
       const css = sharedCSSEditor?.value || "";
       await saveSharedCSS(css);
       showButtonFeedback(saveSharedCSSBtn, "\u2713 \uC800\uC7A5\uB428!");
-    });
+    }));
     const refreshCSSBtn = container.querySelector("#refresh-current-css-btn");
     const applyCSSBtn = container.querySelector("#apply-current-css-btn");
     const themeCSSEditor = container.querySelector("#current-css-editor");
     refreshCSSBtn?.addEventListener("click", async () => {
-      if (!await requestPermission("db"))
-        return;
       const db = await Risuai.getDatabase(["customCSS"]);
-      const fullCSS = db?.customCSS || "";
-      const sharedCSS = await getSharedCSS();
-      let themeCSS = fullCSS;
-      if (sharedCSS && fullCSS.startsWith(sharedCSS)) {
-        themeCSS = fullCSS.substring(sharedCSS.length).trim();
-        if (themeCSS.startsWith(SHARED_CSS_SEPARATOR)) {
-          themeCSS = themeCSS.substring(SHARED_CSS_SEPARATOR.length).trim();
-        }
-      }
       if (themeCSSEditor) {
-        themeCSSEditor.value = themeCSS;
+        themeCSSEditor.value = splitCSS(db?.customCSS || "").themeCSS;
       }
       showButtonFeedback(refreshCSSBtn, "\u2713 \uC0C8\uB85C\uACE0\uCE68!");
     });
-    applyCSSBtn?.addEventListener("click", async () => {
-      if (!await requestPermission("db"))
-        return;
+    applyCSSBtn?.addEventListener("click", () => withButtonGuard(applyCSSBtn, async () => {
       const themeCSS = themeCSSEditor?.value || "";
       const sharedCSS = await getSharedCSS();
       const finalCSS = combineCSS(sharedCSS, themeCSS);
       await Risuai.setDatabase({ customCSS: finalCSS });
-      if (await requestPermission("mainDom")) {
-        try {
-          const rootDoc = await Risuai.getRootDocument();
-          let existingStyle = await rootDoc.querySelector("#customcss");
-          if (!existingStyle) {
-            existingStyle = await rootDoc.querySelector('style[x-id="customcss"]');
-          }
-          if (existingStyle) {
-            await existingStyle.setInnerHTML(finalCSS);
-          }
-        } catch (e) {
-          console.log("Could not apply CSS directly:", e);
-        }
-      }
+      await applyCSSToDom(finalCSS);
       showButtonFeedback(applyCSSBtn, "\u2713 \uC801\uC6A9\uB428!");
       promptSaveToPreset();
-    });
+    }));
     const refreshHTMLBtn = container.querySelector("#refresh-current-html-btn");
     const applyHTMLBtn = container.querySelector("#apply-current-html-btn");
     const htmlEditor = container.querySelector("#current-html-editor");
     refreshHTMLBtn?.addEventListener("click", async () => {
-      if (!await requestPermission("db"))
-        return;
       const db = await Risuai.getDatabase(["guiHTML"]);
       if (htmlEditor) {
         htmlEditor.value = db?.guiHTML || "";
       }
       showButtonFeedback(refreshHTMLBtn, "\u2713 \uC0C8\uB85C\uACE0\uCE68!");
     });
-    applyHTMLBtn?.addEventListener("click", async () => {
-      if (!await requestPermission("db"))
-        return;
+    applyHTMLBtn?.addEventListener("click", () => withButtonGuard(applyHTMLBtn, async () => {
       const html = htmlEditor?.value || "";
       await Risuai.setDatabase({ guiHTML: html });
       showButtonFeedback(applyHTMLBtn, "\u2713 \uC801\uC6A9\uB428!");
       promptSaveToPreset();
-    });
+    }));
   }
   function promptSaveToPreset() {
     const presetName = getCurrentPresetName();
@@ -1841,14 +1848,12 @@
         });
       });
       const loadBtn = item.querySelector(".load-btn");
-      loadBtn?.addEventListener("click", async () => {
-        if (!await requestPermission("mainDom"))
-          return;
+      loadBtn?.addEventListener("click", () => withButtonGuard(loadBtn, async () => {
         await loadThemePreset(preset.name);
         showButtonFeedback(loadBtn, "\u2713 Loaded!");
-      });
+      }));
       const renameBtn = item.querySelector(".rename-btn");
-      renameBtn?.addEventListener("click", () => {
+      renameBtn?.addEventListener("click", () => withButtonGuard(renameBtn, async () => {
         showModal({
           title: "\u270F\uFE0F Rename Theme Preset",
           content: `Enter a new name for "<strong>${escapeHtml(preset.name)}</strong>":`,
@@ -1911,9 +1916,9 @@
             }
           ]
         });
-      });
+      }));
       const exportBtn = item.querySelector(".export-btn");
-      exportBtn?.addEventListener("click", async () => {
+      exportBtn?.addEventListener("click", () => withButtonGuard(exportBtn, async () => {
         const json = await exportThemePreset(preset.name);
         if (json) {
           const blob = new Blob([json], { type: "application/json" });
@@ -1927,9 +1932,9 @@
           URL.revokeObjectURL(url);
           showButtonFeedback(exportBtn, "\u2713", "\u{1F4BE}");
         }
-      });
+      }));
       const deleteBtn = item.querySelector(".delete-btn");
-      deleteBtn?.addEventListener("click", () => {
+      deleteBtn?.addEventListener("click", () => withButtonGuard(deleteBtn, async () => {
         showModal({
           title: "\u{1F5D1}\uFE0F Delete Theme Preset",
           content: `Delete theme preset "<strong>${escapeHtml(preset.name)}</strong>"?<br><br>This action cannot be undone.`,
@@ -1950,7 +1955,7 @@
             }
           ]
         });
-      });
+      }));
       listContainer.appendChild(item);
     });
     setupDragAndDrop(listContainer);
@@ -2154,15 +2159,6 @@
               targetIndex = i;
             }
           }
-          if (targetIndex !== draggedIndex) {
-            (async () => {
-              await reorderPresets(draggedIndex, targetIndex);
-            })();
-            console.log(`Moved preset from position ${draggedIndex} to ${targetIndex}`);
-            if ("vibrate" in navigator) {
-              navigator.vibrate(30);
-            }
-          }
           draggedElement.style.opacity = "1";
           draggedElement.style.transform = "";
           draggedElement.style.boxShadow = "";
@@ -2175,7 +2171,17 @@
             el.style.borderTopWidth = "";
             el.style.borderBottomWidth = "";
           });
-          updatePresetList();
+          if (targetIndex !== draggedIndex) {
+            const fromIdx = draggedIndex;
+            console.log(`Moved preset from position ${fromIdx} to ${targetIndex}`);
+            if ("vibrate" in navigator) {
+              navigator.vibrate(30);
+            }
+            (async () => {
+              await reorderPresets(fromIdx, targetIndex);
+              await updatePresetList();
+            })();
+          }
         }
         isDragging = false;
         draggedElement = null;
@@ -2271,12 +2277,12 @@
             </button>
         `;
       const removeBtn = item.querySelector(".remove-mapping-btn");
-      removeBtn?.addEventListener("click", async () => {
+      removeBtn?.addEventListener("click", () => withButtonGuard(removeBtn, async () => {
         await removeCharacterThemeMapping(character);
         await updateCharacterMappingList();
         await updateThemeSelectDropdown();
         showButtonFeedback(removeBtn, "\u2713");
-      });
+      }));
       listContainer.appendChild(item);
     });
   }
@@ -2326,10 +2332,12 @@
     }
   }
   async function updateAutoSwitchUI() {
-    await updateCurrentCharacterName();
-    await updateDefaultThemeDisplay();
-    await updateCharacterMappingList();
-    await updateThemeSelectDropdown();
+    await Promise.all([
+      updateCurrentCharacterName(),
+      updateDefaultThemeDisplay(),
+      updateCharacterMappingList(),
+      updateThemeSelectDropdown()
+    ]);
   }
   async function updateShortcutDisplay() {
     const shortcutDisplayElement = windowState.window?.querySelector("#shortcut-display");
@@ -2352,15 +2360,50 @@
       windowState.overlay.remove();
       windowState.overlay = null;
     }
-    const existingButtons = document.querySelectorAll(".theme-preset-settings-btn");
-    existingButtons.forEach((btn) => btn.remove());
   }
 
   // src/index.ts
+  function showPermissionError(icon, message, bgColor) {
+    document.body.innerHTML = "";
+    document.body.style.cssText = "margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:rgba(0,0,0,0.5);font-family:sans-serif;";
+    const box = document.createElement("div");
+    box.style.cssText = `background:#2a2a2a;border-radius:12px;padding:24px 32px;max-width:400px;text-align:center;color:#fff;box-shadow:0 4px 24px rgba(0,0,0,0.4);`;
+    const iconEl = document.createElement("div");
+    iconEl.style.cssText = "font-size:36px;margin-bottom:12px;";
+    iconEl.textContent = icon;
+    const msg = document.createElement("p");
+    msg.style.cssText = "font-size:14px;line-height:1.6;margin:0 0 20px 0;";
+    msg.textContent = message;
+    const btn = document.createElement("button");
+    btn.textContent = "\uD655\uC778";
+    btn.style.cssText = `background:${bgColor};color:#fff;border:none;border-radius:8px;padding:8px 24px;font-size:14px;cursor:pointer;`;
+    btn.addEventListener("click", () => {
+      Risuai.hideContainer();
+    });
+    box.append(iconEl, msg, btn);
+    document.body.appendChild(box);
+  }
   (async () => {
     try {
       console.log("Theme Preset Manager: Initializing...");
       await migrateFromArgumentStorage();
+      await initCurrentPreset();
+      const dbPermission = await Risuai.requestPluginPermission("db");
+      const domPermission = await Risuai.requestPluginPermission("mainDom");
+      if (!dbPermission) {
+        console.log("Theme Preset Manager: Database permission denied. Plugin cannot function.");
+        showPermissionError("\u274C", "\uB370\uC774\uD130\uBCA0\uC774\uC2A4 \uAD8C\uD55C\uC774 \uAC70\uBD80\uB418\uC5B4 \uD14C\uB9C8 \uD504\uB9AC\uC14B \uD50C\uB7EC\uADF8\uC778\uC744 \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.\n\uC571\uC744 \uC0C8\uB85C\uACE0\uCE68\uD558\uC5EC \uAD8C\uD55C\uC744 \uD5C8\uC6A9\uD574\uC8FC\uC138\uC694.", "#ef4444");
+        await Risuai.registerButton(
+          { name: "Theme Presets", icon: "\u{1F3A8}", iconType: "html", location: "hamburger" },
+          async () => {
+            await Risuai.showContainer("fullscreen");
+          }
+        );
+        return;
+      }
+      if (!domPermission) {
+        console.log("Theme Preset Manager: Main DOM permission denied. Some features will be limited.");
+      }
       document.addEventListener("keydown", async (e) => {
         const shortcut2 = await getShortcut();
         if (isShortcutMatch(e, shortcut2)) {
